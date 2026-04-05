@@ -5,16 +5,31 @@ use serde_json::{Value, json};
 
 use crate::error::{DevinError, Result};
 
-/// APFEL_BASE: Backend URL (default localhost:11434)
-/// For Ollama: APFEL_BASE=http://localhost:11434
+/// APFEL_BASE: backend URL.
+/// Default: localhost:11435 (devin-managed apfel, avoids Ollama on 11434).
+/// Override: APFEL_BASE=http://localhost:11434 to use Ollama or another server.
 fn base_url() -> String {
-    std::env::var("APFEL_BASE").unwrap_or_else(|_| "http://localhost:11434".to_string())
+    std::env::var("APFEL_BASE").unwrap_or_else(|_| "http://localhost:11435".to_string())
 }
 
-/// APFEL_MODEL: Model name (default on-device)
-/// For Ollama: APFEL_MODEL=qwen2.5-coder:3b
-fn model() -> String {
-    std::env::var("APFEL_MODEL").unwrap_or_else(|_| "on-device".to_string())
+/// APFEL_MODEL: model name to send in API requests.
+/// When unset, auto-detected from the running server's /v1/models list.
+/// apfel returns its built-in model; Ollama returns whatever is loaded.
+pub fn model() -> String {
+    if let Ok(m) = std::env::var("APFEL_MODEL") {
+        return m;
+    }
+    detect_model_from_server().unwrap_or_else(|| "on-device".to_string())
+}
+
+fn detect_model_from_server() -> Option<String> {
+    let res = reqwest::blocking::Client::new()
+        .get(format!("{}/v1/models", base_url()))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .ok()?;
+    let v: serde_json::Value = res.json().ok()?;
+    v["data"].as_array()?.first()?["id"].as_str().map(String::from)
 }
 
 const SYSTEM_PROMPT: &str = "\
@@ -47,7 +62,7 @@ pub fn ensure_server() -> Result<BackendHandle> {
     let child = Command::new("apfel")
         .args([
             "--serve",
-            "--port", "11434",
+            "--port", "11435",
             "--context-strategy", "summarize",
             "--context-output-reserve", "600",
             "--system", SYSTEM_PROMPT,

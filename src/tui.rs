@@ -4,15 +4,15 @@ use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForeground
 use crossterm::terminal;
 use crossterm::QueueableCommand;
 
-use crate::apfel::{Client, Message, build_file_context, ensure_server};
+use crate::apfel::{Client, Message, build_file_context, ensure_server, model};
 use crate::diff::parse_blocks;
 use crate::error::Result;
 
-// claude-code–style palette
-const BRAND:   Color = Color::Rgb { r: 208, g: 191, b: 255 }; // lavender
-const ACCENT:  Color = Color::Rgb { r: 97,  g: 218, b: 251 }; // sky blue
-const MUTED:   Color = Color::Rgb { r: 110, g: 110, b: 128 }; // gray
-const SUCCESS: Color = Color::Rgb { r: 80,  g: 200, b: 120 }; // green
+
+const BRAND:   Color = Color::Rgb { r: 138, g: 180, b: 248 }; // blue
+const MUTED:   Color = Color::Rgb { r: 154, g: 160, b: 166 }; // gray
+const SUCCESS: Color = Color::Rgb { r: 129, g: 201, b: 149 }; // green
+const BORDER:  Color = Color::Rgb { r: 60,  g: 64,  b: 67 };  // dark gray
 
 pub fn run(files: &[String]) -> Result<()> {
     let _server = ensure_server()?;
@@ -25,20 +25,33 @@ pub fn run(files: &[String]) -> Result<()> {
     let stdin = io::stdin();
 
     loop {
-        print_divider()?;
+        print_divider_top()?;
         print_user_prompt()?;
 
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 { break; }
         let input = line.trim().to_string();
-        if input.is_empty() { continue; }
+        if input.is_empty() { 
+            print_divider_bottom()?;
+            continue; 
+        }
 
         match input.as_str() {
             "/exit" | "/quit" => break,
-            s if s.starts_with("/apply") => { handle_apply(s, &history); continue; }
-            s if s.starts_with("/run")   => { handle_run(s, &mut history); continue; }
+            s if s.starts_with("/apply") => { 
+                print_divider_bottom()?;
+                handle_apply(s, &history); 
+                continue; 
+            }
+            s if s.starts_with("/run")   => { 
+                print_divider_bottom()?;
+                handle_run(s, &mut history); 
+                continue; 
+            }
             _ => {}
         }
+
+        print_divider_bottom()?;
 
         let content = if history.is_empty() && !file_ctx.is_empty() {
             format!("{file_ctx}\n\n{input}")
@@ -48,7 +61,7 @@ pub fn run(files: &[String]) -> Result<()> {
         history.push(Message::user(content));
 
         println!();
-        print_devin_label()?;
+        print_assistant_label()?;
 
         // --- streaming response ---
         let mut line_start = true; // track whether we're at the start of a new line
@@ -57,7 +70,7 @@ pub fn run(files: &[String]) -> Result<()> {
             // prefix every new line with two-space indent
             for ch in token.chars() {
                 if line_start {
-                    let _ = write!(out, "  ");
+                    let _ = write!(out, " ");
                     line_start = false;
                 }
                 let _ = write!(out, "{ch}");
@@ -74,6 +87,8 @@ pub fn run(files: &[String]) -> Result<()> {
         if !blocks.is_empty() {
             print_block_actions(&blocks)?;
         }
+
+        print_footer(files)?;
     }
 
     let mut out = io::stdout();
@@ -85,41 +100,85 @@ pub fn run(files: &[String]) -> Result<()> {
 
 // ── render helpers ────────────────────────────────────────────────────────────
 
-fn print_header(files: &[String]) -> Result<()> {
+fn print_header(_files: &[String]) -> Result<()> {
     let mut out = io::stdout();
     println!();
 
-    // "  devin" brand label
-    out.queue(SetForegroundColor(BRAND))?
-       .queue(SetAttribute(Attribute::Bold))?;
-    write!(out, "  devin")?;
+    out.queue(SetAttribute(Attribute::Bold))?;
+    writeln!(out, "devin")?;
     out.queue(ResetColor)?;
-    out.queue(SetForegroundColor(MUTED))?;
-    writeln!(out, "  on-device AI coding assistant")?;
+    println!();
+
+    // Logo and version info
+    out.queue(SetForegroundColor(BRAND))?;
+    write!(out, " ▝▜▄")?;
     out.queue(ResetColor)?;
-
-    // context files
-    if !files.is_empty() {
-        out.queue(SetForegroundColor(MUTED))?;
-        write!(out, "  context ")?;
-        out.queue(SetForegroundColor(ACCENT))?;
-        writeln!(out, "{}", files.join(", "))?;
-        out.queue(ResetColor)?;
-    }
-
-    // hint line
+    out.queue(SetForegroundColor(Color::White))?;
+    writeln!(out, "     Devin CLI v{}", env!("CARGO_PKG_VERSION"))?;
+    
+    out.queue(SetForegroundColor(BRAND))?;
+    writeln!(out, "   ▝▜▄")?;
+    
+    write!(out, "  ▗▟▀")?;
+    out.queue(ResetColor)?;
+    out.queue(SetForegroundColor(Color::White))?;
+    write!(out, "    Signed in as ")?;
+    out.queue(SetAttribute(Attribute::Bold))?;
+    write!(out, "kination")?;
+    out.queue(ResetColor)?;
+    writeln!(out, " /auth")?;
+    
+    out.queue(SetForegroundColor(BRAND))?;
+    write!(out, " ▝▀")?;
+    out.queue(ResetColor)?;
+    out.queue(SetForegroundColor(Color::White))?;
+    write!(out, "      Plan: ")?;
     out.queue(SetForegroundColor(MUTED))?;
-    writeln!(out, "  /exit  /apply <n> [path]  /run <cmd>")?;
+    write!(out, "{} ", model())?;
+    out.queue(ResetColor)?;
+    out.queue(SetForegroundColor(Color::White))?;
+    writeln!(out, "/upgrade")?;
+    out.queue(ResetColor)?;
+    println!();
+
+    // Notification box (optional, making it match the style)
+    let width = term_width().saturating_sub(4);
+    out.queue(SetForegroundColor(BORDER))?;
+    write!(out, "╭")?;
+    write!(out, "{}", "─".repeat(width + 2))?;
+    writeln!(out, "╮")?;
+    
+    write!(out, "│")?;
+    out.queue(ResetColor)?;
+    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM, and other open models")?;
+    write!(out, "{}", " ".repeat(width.saturating_sub(60)))?;
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "│")?;
+
+    write!(out, "╰")?;
+    write!(out, "{}", "─".repeat(width + 2))?;
+    writeln!(out, "╯")?;
+    out.queue(ResetColor)?;
+    out.flush()?;
+
+    Ok(())
+}
+
+fn print_divider_top() -> Result<()> {
+    let mut out = io::stdout();
+    let width = term_width();
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "{}", "▀".repeat(width))?;
     out.queue(ResetColor)?;
     out.flush()?;
     Ok(())
 }
 
-fn print_divider() -> Result<()> {
+fn print_divider_bottom() -> Result<()> {
     let mut out = io::stdout();
-    let width = term_width().saturating_sub(2);
-    out.queue(SetForegroundColor(Color::Rgb { r: 50, g: 50, b: 60 }))?;
-    writeln!(out, "\n  {}", "─".repeat(width))?;
+    let width = term_width();
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "{}", "▄".repeat(width))?;
     out.queue(ResetColor)?;
     out.flush()?;
     Ok(())
@@ -128,28 +187,99 @@ fn print_divider() -> Result<()> {
 fn print_user_prompt() -> Result<()> {
     let mut out = io::stdout();
     out.queue(SetForegroundColor(MUTED))?;
-    write!(out, "\n  ")?;
-    out.queue(ResetColor)?;
-    out.queue(SetForegroundColor(Color::White))?;
-    out.queue(SetAttribute(Attribute::Bold))?;
-    write!(out, "you")?;
-    out.queue(ResetColor)?;
-    out.queue(SetForegroundColor(MUTED))?;
-    write!(out, " › ")?;
+    write!(out, " > ")?;
     out.queue(ResetColor)?;
     out.flush()?;
     Ok(())
 }
 
-fn print_devin_label() -> Result<()> {
+fn print_assistant_label() -> Result<()> {
     let mut out = io::stdout();
     out.queue(SetForegroundColor(BRAND))?;
-    out.queue(SetAttribute(Attribute::Bold))?;
-    write!(out, "  devin")?;
+    write!(out, "✦ ")?;
+    out.queue(ResetColor)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn print_status_box(msg: &str) -> Result<()> {
+    let mut out = io::stdout();
+    let width = term_width().saturating_sub(4);
+    let box_width = width.max(msg.len() + 4);
+    
+    out.queue(SetForegroundColor(BORDER))?;
+    write!(out, "╭")?;
+    write!(out, "{}", "─".repeat(box_width + 2))?;
+    writeln!(out, "╮")?;
+    
+    write!(out, "│ ")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    write!(out, "✓ ")?;
+    out.queue(ResetColor)?;
+    write!(out, " {msg}")?;
+    let msg_len = msg.len() + 2;
+    if box_width > msg_len {
+        write!(out, "{}", " ".repeat(box_width - msg_len))?;
+    }
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, " │")?;
+    
+    write!(out, "│")?;
+    write!(out, "{}", " ".repeat(box_width + 2))?;
+    writeln!(out, "│")?;
+
+    write!(out, "╰")?;
+    write!(out, "{}", "─".repeat(box_width + 2))?;
+    writeln!(out, "╯")?;
+    out.queue(ResetColor)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn print_footer(files: &[String]) -> Result<()> {
+    let mut out = io::stdout();
+    let width = term_width();
+    
+    println!();
+    // Shortcuts hint
+    let shortcut_hint = "? for shortcuts";
+    write!(out, "{}", " ".repeat(width.saturating_sub(shortcut_hint.len())))?;
+    writeln!(out, "{shortcut_hint}")?;
+    
+    // Divider
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "{}", "─".repeat(width))?;
+    out.queue(ResetColor)?;
+    
+    // Info line
+    let left_info = " /exit to quit";
+    let right_info = format!("{} files context", files.len());
+    write!(out, "{left_info}")?;
+    write!(out, "{}", " ".repeat(width.saturating_sub(left_info.len() + right_info.len())))?;
+    writeln!(out, "{right_info}")?;
+    
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "{}", "▀".repeat(width))?;
+    out.queue(ResetColor)?;
+    
+    // Bottom input prompt area
+    out.queue(SetForegroundColor(MUTED))?;
+    write!(out, " > ")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(MUTED))?;
-    writeln!(out, " ›")?;
+    write!(out, "  Type your message or @path/to/file")?;
     out.queue(ResetColor)?;
+    write!(out, "{}", " ".repeat(width.saturating_sub(42)))?;
+    println!();
+    
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "{}", "▄".repeat(width))?;
+    out.queue(ResetColor)?;
+    
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd_str = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("workspace");
+    writeln!(out, " {cwd_str} ({})", cwd.display())?;
+    
     out.flush()?;
     Ok(())
 }
@@ -158,7 +288,7 @@ fn print_block_actions(blocks: &[crate::diff::CodeBlock]) -> Result<()> {
     let mut out = io::stdout();
     let width = term_width().saturating_sub(4);
 
-    out.queue(SetForegroundColor(Color::Rgb { r: 50, g: 50, b: 60 }))?;
+    out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "  {}", "─".repeat(width))?;
     out.queue(ResetColor)?;
 
@@ -167,7 +297,7 @@ fn print_block_actions(blocks: &[crate::diff::CodeBlock]) -> Result<()> {
         write!(out, "  ")?;
         out.queue(SetForegroundColor(MUTED))?;
         write!(out, "[")?;
-        out.queue(SetForegroundColor(ACCENT))?;
+        out.queue(SetForegroundColor(BRAND))?;
         out.queue(SetAttribute(Attribute::Bold))?;
         write!(out, "{}", i + 1)?;
         out.queue(ResetColor)?;
@@ -211,12 +341,7 @@ fn handle_apply(input: &str, history: &[Message]) {
     match path {
         Some(p) => match std::fs::write(&p, &block.content) {
             Ok(_) => {
-                let mut out = io::stdout();
-                let _ = out.queue(SetForegroundColor(SUCCESS));
-                let _ = write!(out, "\n  ✓ ");
-                let _ = out.queue(ResetColor);
-                let _ = writeln!(out, "written to {p}\n");
-                let _ = out.flush();
+                let _ = print_status_box(&format!("WriteFile {p}"));
             }
             Err(e) => eprintln!("  error: {e}"),
         },
@@ -228,11 +353,7 @@ fn handle_run(input: &str, history: &mut Vec<Message>) {
     let cmd = input.strip_prefix("/run").unwrap_or("").trim();
     if cmd.is_empty() { eprintln!("  usage: /run <command>"); return; }
 
-    let mut out = io::stdout();
-    let _ = out.queue(SetForegroundColor(MUTED));
-    let _ = writeln!(out, "\n  $ {cmd}");
-    let _ = out.queue(ResetColor);
-    let _ = out.flush();
+    let _ = print_status_box(&format!("RunShellCommand {cmd}"));
 
     match std::process::Command::new("sh").arg("-c").arg(cmd).output() {
         Ok(output) => {

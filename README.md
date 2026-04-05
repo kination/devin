@@ -1,46 +1,70 @@
 # devin
 
-An on-device AI coding assistant powered by `apfel`.
+An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-Ficial/apfel).
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
+- **macOS 26+** with Apple Intelligence enabled (for the built-in on-device model)
+- **apfel**: `brew tap Arthur-Ficial/tap && brew install Arthur-Ficial/tap/apfel`
+- **Rust**: 1.75 or later
 
-- **apfel**: Ensure the `apfel` server is installed and available in your PATH.
-  - Installation: `brew tap Arthur-Ficial/tap && brew install Arthur-Ficial/tap/apfel`
-- **Rust**: Version 1.75 or later.
-
-### Running the Assistant
-
-To start an interactive TUI session:
+## Usage
 
 ```bash
-cargo run -- chat
+# Interactive chat (uses built-in Mac LLM by default)
+devin chat
+
+# Attach files as context
+devin chat -f src/main.rs -f src/lib.rs
+
+# Single question, stdout
+devin ask "What does ensure_server do?"
+
+# Single question with file context
+devin ask "Any bugs here?" -f src/apfel.rs
 ```
 
-To include specific files as context:
+## Chat Commands
+
+| Command | Description |
+|---|---|
+| `/apply <n> [path]` | Write the nth code block to a file. Path is auto-detected if omitted. |
+| `/run <cmd>` | Run a shell command and share its output with the assistant. |
+| `/exit` | End the session. |
+
+## Backend Configuration
+
+devin uses Apple's built-in on-device LLM via apfel by default. No network, no API key.
+
+### Default (built-in Mac LLM)
 
 ```bash
-cargo run -- chat -f src/main.rs -f src/apfel.rs
+devin chat
 ```
 
-To ask a single question from the CLI:
+Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
+
+### Ollama
 
 ```bash
-cargo run -- ask "How do I use the TUI?"
+APFEL_BASE=http://localhost:11434 devin chat
 ```
 
-## TUI Commands
+Model is auto-detected from Ollama's model list. To pin a specific model:
 
-Inside the chat interface, you can use the following commands:
+```bash
+APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin chat
+```
 
-- `/apply <n> [filename]`: Apply the $n$-th code block from the last assistant response to a file.
-- `/run <command>`: Execute a shell command and optionally share the output with the assistant.
-- `/exit` or `/quit`: Close the session.
-- `PageUp` / `PageDown`: Scroll through the chat history.
-- `Ctrl+C`: Force quit.
+### Any OpenAI-compatible server
 
-## Configuration
+```bash
+APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin chat
+```
 
-- `APFEL_BASE`: Backend URL (default: `http://localhost:11435`)
-- `APFEL_MODEL`: Model name (default: `on-device`)
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `APFEL_BASE` | `http://localhost:11435` | Backend URL. Set to `http://localhost:11434` for Ollama. |
+| `APFEL_MODEL` | _(auto-detected)_ | Model name. Auto-detected from `/v1/models` when unset. |
