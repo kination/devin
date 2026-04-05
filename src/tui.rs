@@ -1,18 +1,19 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
+use crossterm::cursor;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal;
+use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
 use crossterm::QueueableCommand;
 
-use crate::apfel::{Client, Message, build_file_context, ensure_server, model};
-use crate::diff::parse_blocks;
+use crate::apfel::{Client, Message, build_file_context, ensure_server, extract_mentioned_files, model};
+use crate::diff::{compute_diff, parse_blocks, DiffKind};
 use crate::error::Result;
 
-
-const BRAND:   Color = Color::Rgb { r: 138, g: 180, b: 248 }; // blue
-const MUTED:   Color = Color::Rgb { r: 154, g: 160, b: 166 }; // gray
-const SUCCESS: Color = Color::Rgb { r: 129, g: 201, b: 149 }; // green
-const BORDER:  Color = Color::Rgb { r: 60,  g: 64,  b: 67 };  // dark gray
+const BRAND:   Color = Color::Rgb { r: 138, g: 180, b: 248 };
+const MUTED:   Color = Color::Rgb { r: 154, g: 160, b: 166 };
+const SUCCESS: Color = Color::Rgb { r: 129, g: 201, b: 149 };
+const BORDER:  Color = Color::Rgb { r: 60,  g: 64,  b: 67  };
 
 pub fn run(files: &[String]) -> Result<()> {
     let _server = ensure_server()?;
@@ -22,52 +23,57 @@ pub fn run(files: &[String]) -> Result<()> {
     print_header(files)?;
 
     let mut history: Vec<Message> = Vec::new();
-    let stdin = io::stdin();
 
     loop {
         print_divider_top()?;
         print_user_prompt()?;
 
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line)? == 0 { break; }
-        let input = line.trim().to_string();
-        if input.is_empty() { 
+        let input = match read_line()? {
+            Some(s) => s,
+            None => break, // Ctrl-C / EOF
+        };
+
+        if input.is_empty() {
             print_divider_bottom()?;
-            continue; 
+            continue;
         }
 
         match input.as_str() {
             "/exit" | "/quit" => break,
-            s if s.starts_with("/apply") => { 
+            s if s.starts_with("/run") => {
                 print_divider_bottom()?;
-                handle_apply(s, &history); 
-                continue; 
-            }
-            s if s.starts_with("/run")   => { 
-                print_divider_bottom()?;
-                handle_run(s, &mut history); 
-                continue; 
+                handle_run(s, &mut history);
+                continue;
             }
             _ => {}
         }
 
         print_divider_bottom()?;
 
-        let content = if history.is_empty() && !file_ctx.is_empty() {
-            format!("{file_ctx}\n\n{input}")
-        } else {
-            input.clone()
+        // Auto-attach any files the user mentioned by path in their message
+        let mentioned = extract_mentioned_files(&input);
+        let mention_ctx = build_file_context(&mentioned);
+
+        let content = {
+            let base_ctx = if history.is_empty() && !file_ctx.is_empty() {
+                format!("{file_ctx}\n\n{input}")
+            } else {
+                input.clone()
+            };
+            if mention_ctx.is_empty() {
+                base_ctx
+            } else {
+                format!("{mention_ctx}\n\n{base_ctx}")
+            }
         };
         history.push(Message::user(content));
 
         println!();
         print_assistant_label()?;
 
-        // --- streaming response ---
-        let mut line_start = true; // track whether we're at the start of a new line
+        let mut line_start = true;
         let response = client.stream(&history, |token| {
             let mut out = io::stdout();
-            // prefix every new line with two-space indent
             for ch in token.chars() {
                 if line_start {
                     let _ = write!(out, " ");
@@ -82,10 +88,19 @@ pub fn run(files: &[String]) -> Result<()> {
         println!("\n");
         history.push(Message::assistant(&response));
 
-        // --- code block action hints ---
         let blocks = parse_blocks(&response);
-        if !blocks.is_empty() {
-            print_block_actions(&blocks)?;
+        for block in &blocks {
+            // If the block has no detected filename but the user mentioned exactly
+            // one file in their prompt, treat that file as the write target.
+            if block.filename.is_none() && mentioned.len() == 1 {
+                let filled = crate::diff::CodeBlock {
+                    filename: Some(mentioned[0].clone()),
+                    content: block.content.clone(),
+                };
+                prompt_and_write(&filled)?;
+            } else {
+                prompt_and_write(block)?;
+            }
         }
 
         print_footer(files)?;
@@ -96,6 +111,138 @@ pub fn run(files: &[String]) -> Result<()> {
     out.flush()?;
     println!();
     Ok(())
+}
+
+// ── line editor ───────────────────────────────────────────────────────────────
+
+/// Read one line with left/right cursor movement. Returns None on Ctrl-C / EOF.
+fn read_line() -> Result<Option<String>> {
+    let mut out = io::stdout();
+    let mut buf: Vec<char> = Vec::new();
+    let mut pos: usize = 0; // cursor position within buf
+
+    enable_raw_mode()?;
+
+    let result = loop {
+        let ev = match event::read() {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = disable_raw_mode();
+                return Err(e.into());
+            }
+        };
+
+        match ev {
+            Event::Key(key) => match key.code {
+                KeyCode::Enter => {
+                    break Some(buf.into_iter().collect());
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break None;
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break None;
+                }
+                KeyCode::Char(c) => {
+                    buf.insert(pos, c);
+                    pos += 1;
+                    // Reprint from insertion point to keep terminal in sync
+                    let tail: String = buf[pos..].iter().collect();
+                    write!(out, "{c}{tail}")?;
+                    if !tail.is_empty() {
+                        out.queue(cursor::MoveLeft(tail.len() as u16))?;
+                    }
+                    out.flush()?;
+                }
+                KeyCode::Backspace => {
+                    if pos > 0 {
+                        pos -= 1;
+                        buf.remove(pos);
+                        out.queue(cursor::MoveLeft(1))?;
+                        let tail: String = buf[pos..].iter().collect();
+                        write!(out, "{tail} ")?;
+                        out.queue(cursor::MoveLeft((tail.len() + 1) as u16))?;
+                        out.flush()?;
+                    }
+                }
+                KeyCode::Delete => {
+                    if pos < buf.len() {
+                        buf.remove(pos);
+                        let tail: String = buf[pos..].iter().collect();
+                        write!(out, "{tail} ")?;
+                        out.queue(cursor::MoveLeft((tail.len() + 1) as u16))?;
+                        out.flush()?;
+                    }
+                }
+                KeyCode::Left => {
+                    if pos > 0 {
+                        pos -= 1;
+                        out.queue(cursor::MoveLeft(1))?;
+                        out.flush()?;
+                    }
+                }
+                KeyCode::Right => {
+                    if pos < buf.len() {
+                        pos += 1;
+                        out.queue(cursor::MoveRight(1))?;
+                        out.flush()?;
+                    }
+                }
+                KeyCode::Home => {
+                    if pos > 0 {
+                        out.queue(cursor::MoveLeft(pos as u16))?;
+                        pos = 0;
+                        out.flush()?;
+                    }
+                }
+                KeyCode::End => {
+                    let diff = buf.len() - pos;
+                    if diff > 0 {
+                        out.queue(cursor::MoveRight(diff as u16))?;
+                        pos = buf.len();
+                        out.flush()?;
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    };
+
+    disable_raw_mode()?;
+    writeln!(out)?;
+    out.flush()?;
+
+    Ok(result)
+}
+
+/// Simple y/N prompt (no line-editor needed).
+fn read_confirm(prompt: &str) -> Result<bool> {
+    let mut out = io::stdout();
+    write!(out, "{prompt}")?;
+    out.flush()?;
+
+    enable_raw_mode()?;
+    let answer = loop {
+        match event::read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => break true,
+                KeyCode::Enter
+                | KeyCode::Char('n')
+                | KeyCode::Char('N')
+                | KeyCode::Esc => break false,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break false
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    };
+    disable_raw_mode()?;
+    writeln!(out)?;
+    out.flush()?;
+    Ok(answer)
 }
 
 // ── render helpers ────────────────────────────────────────────────────────────
@@ -109,16 +256,15 @@ fn print_header(_files: &[String]) -> Result<()> {
     out.queue(ResetColor)?;
     println!();
 
-    // Logo and version info
     out.queue(SetForegroundColor(BRAND))?;
     write!(out, " ▝▜▄")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
     writeln!(out, "     Devin CLI v{}", env!("CARGO_PKG_VERSION"))?;
-    
+
     out.queue(SetForegroundColor(BRAND))?;
     writeln!(out, "   ▝▜▄")?;
-    
+
     write!(out, "  ▗▟▀")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
@@ -127,7 +273,7 @@ fn print_header(_files: &[String]) -> Result<()> {
     write!(out, "kination")?;
     out.queue(ResetColor)?;
     writeln!(out, " /auth")?;
-    
+
     out.queue(SetForegroundColor(BRAND))?;
     write!(out, " ▝▀")?;
     out.queue(ResetColor)?;
@@ -141,16 +287,15 @@ fn print_header(_files: &[String]) -> Result<()> {
     out.queue(ResetColor)?;
     println!();
 
-    // Notification box (optional, making it match the style)
     let width = term_width().saturating_sub(4);
     out.queue(SetForegroundColor(BORDER))?;
     write!(out, "╭")?;
     write!(out, "{}", "─".repeat(width + 2))?;
     writeln!(out, "╮")?;
-    
+
     write!(out, "│")?;
     out.queue(ResetColor)?;
-    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM, and other open models")?;
+    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
     write!(out, "{}", " ".repeat(width.saturating_sub(60)))?;
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "│")?;
@@ -206,12 +351,12 @@ fn print_status_box(msg: &str) -> Result<()> {
     let mut out = io::stdout();
     let width = term_width().saturating_sub(4);
     let box_width = width.max(msg.len() + 4);
-    
+
     out.queue(SetForegroundColor(BORDER))?;
     write!(out, "╭")?;
     write!(out, "{}", "─".repeat(box_width + 2))?;
     writeln!(out, "╮")?;
-    
+
     write!(out, "│ ")?;
     out.queue(SetForegroundColor(SUCCESS))?;
     write!(out, "✓ ")?;
@@ -223,7 +368,7 @@ fn print_status_box(msg: &str) -> Result<()> {
     }
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, " │")?;
-    
+
     write!(out, "│")?;
     write!(out, "{}", " ".repeat(box_width + 2))?;
     writeln!(out, "│")?;
@@ -239,30 +384,26 @@ fn print_status_box(msg: &str) -> Result<()> {
 fn print_footer(files: &[String]) -> Result<()> {
     let mut out = io::stdout();
     let width = term_width();
-    
+
     println!();
-    // Shortcuts hint
     let shortcut_hint = "? for shortcuts";
     write!(out, "{}", " ".repeat(width.saturating_sub(shortcut_hint.len())))?;
     writeln!(out, "{shortcut_hint}")?;
-    
-    // Divider
+
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "{}", "─".repeat(width))?;
     out.queue(ResetColor)?;
-    
-    // Info line
+
     let left_info = " /exit to quit";
     let right_info = format!("{} files context", files.len());
     write!(out, "{left_info}")?;
     write!(out, "{}", " ".repeat(width.saturating_sub(left_info.len() + right_info.len())))?;
     writeln!(out, "{right_info}")?;
-    
+
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "{}", "▀".repeat(width))?;
     out.queue(ResetColor)?;
-    
-    // Bottom input prompt area
+
     out.queue(SetForegroundColor(MUTED))?;
     write!(out, " > ")?;
     out.queue(ResetColor)?;
@@ -271,82 +412,100 @@ fn print_footer(files: &[String]) -> Result<()> {
     out.queue(ResetColor)?;
     write!(out, "{}", " ".repeat(width.saturating_sub(42)))?;
     println!();
-    
+
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "{}", "▄".repeat(width))?;
     out.queue(ResetColor)?;
-    
+
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd_str = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("workspace");
     writeln!(out, " {cwd_str} ({})", cwd.display())?;
-    
+
     out.flush()?;
     Ok(())
 }
 
-fn print_block_actions(blocks: &[crate::diff::CodeBlock]) -> Result<()> {
+/// Show diff and ask [y/N] write permission. Skips blocks with no detected filename.
+pub(crate) fn prompt_and_write(block: &crate::diff::CodeBlock) -> Result<()> {
     let mut out = io::stdout();
-    let width = term_width().saturating_sub(4);
 
+    // Skip blocks with no detected path — don't prompt the user to type one
+    let Some(path) = &block.filename else {
+        return Ok(());
+    };
+
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let diff = compute_diff(&old, &block.content);
+    let has_changes = diff.iter().any(|l| l.kind != DiffKind::Context && l.content != "⋯");
+
+    if !has_changes {
+        out.queue(SetForegroundColor(MUTED))?;
+        writeln!(out, "\n  {path} — no changes")?;
+        out.queue(ResetColor)?;
+        out.flush()?;
+        return Ok(());
+    }
+
+    let width = term_width().saturating_sub(4);
+    let label = format!(" {path} ");
+    let bar = "─".repeat(width.saturating_sub(label.len() + 2));
+
+    writeln!(out)?;
     out.queue(SetForegroundColor(BORDER))?;
-    writeln!(out, "  {}", "─".repeat(width))?;
+    write!(out, "  ┌{label}")?;
+    writeln!(out, "{bar}┐")?;
     out.queue(ResetColor)?;
 
-    for (i, block) in blocks.iter().enumerate() {
-        let name = block.filename.as_deref().unwrap_or("untitled");
-        write!(out, "  ")?;
+    for line in &diff {
+        match line.kind {
+            DiffKind::Add => {
+                out.queue(SetForegroundColor(SUCCESS))?;
+                writeln!(out, "  │ + {}", line.content)?;
+            }
+            DiffKind::Remove => {
+                out.queue(SetForegroundColor(Color::Rgb { r: 220, g: 80, b: 80 }))?;
+                writeln!(out, "  │ - {}", line.content)?;
+            }
+            DiffKind::Context => {
+                out.queue(SetForegroundColor(MUTED))?;
+                writeln!(out, "  │   {}", line.content)?;
+            }
+        }
+    }
+
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "  └{}", "─".repeat(width.saturating_sub(2)))?;
+    out.queue(ResetColor)?;
+
+    out.queue(SetForegroundColor(Color::White))?;
+    write!(out, "\n  Write to {path}? ")?;
+    out.queue(SetForegroundColor(MUTED))?;
+    out.flush()?;
+
+    if read_confirm("[y/N] ")? {
+        match std::fs::write(path, &block.content) {
+            Ok(_) => {
+                out.queue(SetForegroundColor(SUCCESS))?;
+                write!(out, "  ✓ ")?;
+                out.queue(ResetColor)?;
+                writeln!(out, "written to {path}")?;
+            }
+            Err(e) => {
+                out.queue(SetForegroundColor(Color::Rgb { r: 220, g: 80, b: 80 }))?;
+                write!(out, "  ✗ ")?;
+                out.queue(ResetColor)?;
+                writeln!(out, "{e}")?;
+            }
+        }
+    } else {
         out.queue(SetForegroundColor(MUTED))?;
-        write!(out, "[")?;
-        out.queue(SetForegroundColor(BRAND))?;
-        out.queue(SetAttribute(Attribute::Bold))?;
-        write!(out, "{}", i + 1)?;
-        out.queue(ResetColor)?;
-        out.queue(SetForegroundColor(MUTED))?;
-        write!(out, "] ")?;
-        out.queue(ResetColor)?;
-        out.queue(SetForegroundColor(Color::White))?;
-        writeln!(out, "{name}")?;
+        writeln!(out, "  skipped")?;
         out.queue(ResetColor)?;
     }
 
-    out.queue(SetForegroundColor(MUTED))?;
-    writeln!(out, "\n  /apply <n> [path] to write  ·  /apply <n> to use detected path")?;
-    out.queue(ResetColor)?;
     writeln!(out)?;
     out.flush()?;
     Ok(())
-}
-
-// ── command handlers ──────────────────────────────────────────────────────────
-
-fn handle_apply(input: &str, history: &[Message]) {
-    let parts: Vec<&str> = input.split_whitespace().collect();
-    let idx = match parts.get(1).and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0) {
-        Some(n) => n - 1,
-        None => { eprintln!("  usage: /apply <n> [path]"); return; }
-    };
-
-    let response = history.iter().rev()
-        .find(|m| m.role == "assistant")
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
-
-    let blocks = parse_blocks(response);
-    let block = match blocks.get(idx) {
-        Some(b) => b,
-        None => { eprintln!("  block {} not found", idx + 1); return; }
-    };
-
-    let path = parts.get(2).map(|s| s.to_string()).or_else(|| block.filename.clone());
-    match path {
-        Some(p) => match std::fs::write(&p, &block.content) {
-            Ok(_) => {
-                let _ = print_status_box(&format!("WriteFile {p}"));
-            }
-            Err(e) => eprintln!("  error: {e}"),
-        },
-        None => eprintln!("  no filename — use /apply <n> <path>"),
-    }
 }
 
 fn handle_run(input: &str, history: &mut Vec<Message>) {
