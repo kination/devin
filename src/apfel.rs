@@ -200,6 +200,23 @@ pub fn extract_content(res: &Value) -> Option<String> {
         .map(String::from)
 }
 
+/// Scan text for absolute file paths that exist on disk.
+/// Used to auto-attach files the user mentions in their prompt.
+pub fn extract_mentioned_files(text: &str) -> Vec<String> {
+    use regex::Regex;
+    // Match absolute paths: /some/path/file.ext
+    // Stops at whitespace, quotes, or common punctuation that wouldn't be part of a path.
+    let re = Regex::new(r#"/[^\s'"<>(),;]+\.[a-zA-Z0-9]+"#).unwrap();
+    re.find_iter(text)
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(|c: char| matches!(c, '.' | ',' | ')' | ']'))
+                .to_string()
+        })
+        .filter(|p| std::path::Path::new(p).is_file())
+        .collect()
+}
+
 /// Read a list of file paths and combine them into a context string
 pub fn build_file_context(files: &[String]) -> String {
     files

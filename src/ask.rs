@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use crate::apfel::{Client, Message, build_file_context, ensure_server};
+use crate::apfel::{Client, Message, build_file_context, ensure_server, extract_mentioned_files};
 use crate::diff::parse_blocks;
 use crate::error::Result;
 use crate::tui::prompt_and_write;
@@ -27,9 +27,18 @@ pub fn run(query: &str, files: &[String], print_only: bool, with_diff: bool) -> 
         println!();
 
         if with_diff {
+            let mentioned = extract_mentioned_files(query);
             let blocks = parse_blocks(&response);
             for block in &blocks {
-                prompt_and_write(block)?;
+                if block.filename.is_none() && mentioned.len() == 1 {
+                    let filled = crate::diff::CodeBlock {
+                        filename: Some(mentioned[0].clone()),
+                        content: block.content.clone(),
+                    };
+                    prompt_and_write(&filled)?;
+                } else {
+                    prompt_and_write(block)?;
+                }
             }
         }
     }
@@ -38,10 +47,16 @@ pub fn run(query: &str, files: &[String], print_only: bool, with_diff: bool) -> 
 }
 
 fn build_prompt(query: &str, files: &[String]) -> String {
-    let ctx = build_file_context(files);
-    if ctx.is_empty() {
-        query.to_string()
-    } else {
-        format!("{ctx}\n\n{query}")
+    let explicit_ctx = build_file_context(files);
+
+    // Also attach any files the user mentioned by absolute path in the query
+    let mentioned = extract_mentioned_files(query);
+    let mention_ctx = build_file_context(&mentioned);
+
+    match (explicit_ctx.is_empty(), mention_ctx.is_empty()) {
+        (true,  true)  => query.to_string(),
+        (false, true)  => format!("{explicit_ctx}\n\n{query}"),
+        (true,  false) => format!("{mention_ctx}\n\n{query}"),
+        (false, false) => format!("{explicit_ctx}\n\n{mention_ctx}\n\n{query}"),
     }
 }
