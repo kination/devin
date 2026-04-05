@@ -69,7 +69,7 @@ devin uses Apple's built-in on-device LLM via apfel by default. No network, no A
 ### Default (built-in Mac LLM)
 
 ```bash
-devin chat
+devin
 ```
 
 Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
