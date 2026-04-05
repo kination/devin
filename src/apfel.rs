@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 
 use crate::error::{DevinError, Result};
 
-/// APFEL_BASE: Backend URL (default localhost:11435)
+/// APFEL_BASE: Backend URL (default localhost:11434)
 /// For Ollama: APFEL_BASE=http://localhost:11434
 fn base_url() -> String {
-    std::env::var("APFEL_BASE").unwrap_or_else(|_| "http://localhost:11435".to_string())
+    std::env::var("APFEL_BASE").unwrap_or_else(|_| "http://localhost:11434".to_string())
 }
 
 /// APFEL_MODEL: Model name (default on-device)
@@ -46,8 +46,8 @@ pub fn ensure_server() -> Result<BackendHandle> {
 
     let child = Command::new("apfel")
         .args([
-            "--server",
-            "--port", "11435",
+            "--serve",
+            "--port", "11434",
             "--context-strategy", "summarize",
             "--context-output-reserve", "600",
             "--system", SYSTEM_PROMPT,
@@ -95,13 +95,9 @@ impl Client {
         Self { http: reqwest::blocking::Client::new() }
     }
 
-    /// Send message list and return response text
+    /// Send messages and return full response text (non-streaming)
     pub fn complete(&self, messages: &[Message]) -> Result<String> {
-        let msgs: Vec<Value> = messages
-            .iter()
-            .map(|m| json!({ "role": m.role, "content": m.content }))
-            .collect();
-
+        let msgs = self.build_msgs(messages);
         let body = json!({
             "model": model(),
             "messages": msgs,
@@ -115,12 +111,53 @@ impl Client {
             .send()?
             .json()?;
 
-        let text = extract_content(&res).unwrap_or_default();
-        if text.is_empty() {
-            // Debug: Print raw server response
-            eprintln!("[debug] Empty response. Server response: {res}");
+        Ok(extract_content(&res).unwrap_or_default())
+    }
+
+    /// Stream response tokens, calling `on_token` for each chunk.
+    /// Returns the full response string.
+    pub fn stream(&self, messages: &[Message], mut on_token: impl FnMut(&str)) -> Result<String> {
+        use std::io::BufRead;
+
+        let msgs = self.build_msgs(messages);
+        let body = json!({
+            "model": model(),
+            "messages": msgs,
+            "stream": true
+        });
+
+        let res = self
+            .http
+            .post(format!("{}/v1/chat/completions", base_url()))
+            .json(&body)
+            .send()?;
+
+        let mut full = String::new();
+
+        for line in std::io::BufReader::new(res).lines() {
+            let line = line.map_err(std::io::Error::from)?;
+            let data = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+            if data == "[DONE]" { break; }
+
+            if let Ok(v) = serde_json::from_str::<Value>(data) {
+                if let Some(token) = v["choices"][0]["delta"]["content"].as_str() {
+                    on_token(token);
+                    full.push_str(token);
+                }
+            }
         }
-        Ok(text)
+
+        Ok(full)
+    }
+
+    fn build_msgs(&self, messages: &[Message]) -> Vec<Value> {
+        messages
+            .iter()
+            .map(|m| json!({ "role": m.role, "content": m.content }))
+            .collect()
     }
 }
 
