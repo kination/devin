@@ -23,12 +23,13 @@ pub fn run(files: &[String]) -> Result<()> {
     print_header(files)?;
 
     let mut history: Vec<Message> = Vec::new();
+    let mut prompt_history: Vec<String> = Vec::new();
 
     loop {
         print_divider_top()?;
         print_user_prompt()?;
 
-        let input = match read_line()? {
+        let input = match read_line(&prompt_history)? {
             Some(s) => s,
             None => break, // Ctrl-C / EOF
         };
@@ -37,6 +38,8 @@ pub fn run(files: &[String]) -> Result<()> {
             print_divider_bottom()?;
             continue;
         }
+
+        prompt_history.push(input.clone());
 
         match input.as_str() {
             "/exit" | "/quit" => break,
@@ -115,11 +118,13 @@ pub fn run(files: &[String]) -> Result<()> {
 
 // ── line editor ───────────────────────────────────────────────────────────────
 
-/// Read one line with left/right cursor movement. Returns None on Ctrl-C / EOF.
-fn read_line() -> Result<Option<String>> {
+/// Read one line with cursor movement and prompt history navigation.
+/// Returns None on Ctrl-C / EOF.
+fn read_line(prompt_history: &[String]) -> Result<Option<String>> {
     let mut out = io::stdout();
     let mut buf: Vec<char> = Vec::new();
     let mut pos: usize = 0; // cursor position within buf
+    let mut nav = HistoryNavigator::new(prompt_history.to_vec());
 
     enable_raw_mode()?;
 
@@ -202,6 +207,16 @@ fn read_line() -> Result<Option<String>> {
                         pos = buf.len();
                         out.flush()?;
                     }
+                }
+                KeyCode::Up => {
+                    let current: String = buf.iter().collect();
+                    if let Some(text) = nav.press_up(&current) {
+                        replace_buf(&mut out, &mut buf, &mut pos, &text)?;
+                    }
+                }
+                KeyCode::Down => {
+                    let text = nav.press_down();
+                    replace_buf(&mut out, &mut buf, &mut pos, &text)?;
                 }
                 _ => {}
             },
@@ -535,4 +550,112 @@ fn handle_run(input: &str, history: &mut Vec<Message>) {
 
 fn term_width() -> usize {
     terminal::size().map(|(w, _)| w as usize).unwrap_or(80)
+}
+
+/// Replace the current input buffer with `text`, repainting the terminal line.
+fn replace_buf(out: &mut io::Stdout, buf: &mut Vec<char>, pos: &mut usize, text: &str) -> Result<()> {
+    if *pos > 0 {
+        out.queue(cursor::MoveLeft(*pos as u16))?;
+    }
+    let old_len = buf.len();
+    if old_len > 0 {
+        write!(out, "{}", " ".repeat(old_len))?;
+        out.queue(cursor::MoveLeft(old_len as u16))?;
+    }
+    write!(out, "{text}")?;
+    *buf = text.chars().collect();
+    *pos = buf.len();
+    out.flush()?;
+    Ok(())
+}
+
+// ── history navigator ─────────────────────────────────────────────────────────
+
+struct HistoryNavigator {
+    history: Vec<String>,
+    idx: Option<usize>, // distance from end: 0 = last entry, 1 = second-to-last
+    saved: String,      // in-progress text preserved before navigating up
+}
+
+impl HistoryNavigator {
+    fn new(history: Vec<String>) -> Self {
+        Self { history, idx: None, saved: String::new() }
+    }
+
+    /// Move to an older entry. Saves current input on first call.
+    /// Returns `Some(text)` or `None` if already at the oldest entry.
+    fn press_up(&mut self, current: &str) -> Option<String> {
+        if self.history.is_empty() {
+            return None;
+        }
+        let new_idx = match self.idx {
+            None => {
+                self.saved = current.to_string();
+                0
+            }
+            Some(i) if i + 1 < self.history.len() => i + 1,
+            Some(_) => return None,
+        };
+        self.idx = Some(new_idx);
+        Some(self.history[self.history.len() - 1 - new_idx].clone())
+    }
+
+    /// Move to a newer entry. Returns saved input when back at live position.
+    fn press_down(&mut self) -> String {
+        match self.idx {
+            None => String::new(),
+            Some(0) => {
+                self.idx = None;
+                self.saved.clone()
+            }
+            Some(i) => {
+                self.idx = Some(i - 1);
+                self.history[self.history.len() - i].clone()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn up_on_empty_history_is_noop() {
+        let mut nav = HistoryNavigator::new(vec![]);
+        assert_eq!(nav.press_up("typing"), None);
+    }
+
+    #[test]
+    fn up_returns_most_recent() {
+        let mut nav = HistoryNavigator::new(vec!["first".into(), "second".into()]);
+        assert_eq!(nav.press_up(""), Some("second".to_string()));
+    }
+
+    #[test]
+    fn up_twice_goes_older() {
+        let mut nav = HistoryNavigator::new(vec!["first".into(), "second".into()]);
+        nav.press_up("");
+        assert_eq!(nav.press_up(""), Some("first".to_string()));
+    }
+
+    #[test]
+    fn up_at_oldest_returns_none() {
+        let mut nav = HistoryNavigator::new(vec!["only".into()]);
+        nav.press_up("");
+        assert_eq!(nav.press_up(""), None);
+    }
+
+    #[test]
+    fn down_after_up_restores_saved() {
+        let mut nav = HistoryNavigator::new(vec!["hello".into()]);
+        nav.press_up("draft");
+        assert_eq!(nav.press_down(), "draft".to_string());
+    }
+
+    #[test]
+    fn down_when_live_returns_empty() {
+        let mut nav = HistoryNavigator::new(vec!["hello".into()]);
+        assert_eq!(nav.press_down(), String::new());
+    }
 }
