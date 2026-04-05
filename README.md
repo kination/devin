@@ -25,26 +25,42 @@ An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-
 ## Usage
 
 ```bash
-# Interactive chat (uses built-in Mac LLM by default)
-devin chat
+# Start interactive chat
+devin
 
-# Attach files as context
-devin chat -f src/main.rs -f src/lib.rs
+# Start chat with specific files as context
+devin -f src/main.rs -f src/lib.rs
 
-# Single question, stdout
-devin ask "What does ensure_server do?"
+# Single question (non-interactive)
+devin "How do I use this?"
 
-# Single question with file context
-devin ask "Any bugs here?" -f src/apfel.rs
+# Single question with file context and diff review before writing
+devin "Add a logout method to Auth" -f src/auth.rs --diff
+
+# Pipe-friendly raw output
+devin "List all functions in this file" -f src/cli.rs --print
 ```
+
+## .devin-context
+
+Create a `.devin-context` file in your project root to automatically attach files using glob patterns:
+
+```text
+src/**/*.rs
+docs/*.md
+# comments are ignored
+```
+
+Use `--no-context` to skip this auto-attachment.
 
 ## Chat Commands
 
 | Command | Description |
 |---|---|
-| `/apply <n> [path]` | Write the nth code block to a file. Path is auto-detected if omitted. |
-| `/run <cmd>` | Run a shell command and share its output with the assistant. |
-| `/exit` | End the session. |
+| `/run <cmd>` | Execute a shell command and share the output with devin. |
+| `/exit`, `/quit` | End the session. |
+
+In chat, you can also mention files using `@path/to/file` to instantly add them to the conversation context.
 
 ## Backend Configuration
 
