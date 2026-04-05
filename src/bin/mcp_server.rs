@@ -1,235 +1,284 @@
-use std::collections::HashMap;
-use std::process::Command;
+use std::path::PathBuf;
 
-use anyhow::Result;
+use anchordb::AnchorDB;
+use devin::manifest::Manifest;
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::*,
+    model::{Implementation, ServerInfo},
     tool, tool_handler, tool_router,
-    schemars,
+    transport::stdio,
 };
-use serde::Deserialize;
-use tracing_subscriber::EnvFilter;
+use rmcp::schemars;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-// ── manifest ──────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Helper functions (also tested below)
+// ---------------------------------------------------------------------------
 
-/// file_path → list of anchordb chunk IDs
-type Manifest = HashMap<String, Vec<u64>>;
-
-fn load_manifest(path: &str) -> Result<Manifest> {
-    let text = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&text)?)
-}
-
-// ── scoring ───────────────────────────────────────────────────────────────────
-
-/// Count how many whitespace-separated tokens from `query` appear (case-insensitive) in `text`.
-fn score_text(query: &str, text: &str) -> usize {
-    let text_lower = text.to_lowercase();
-    query
-        .split_whitespace()
+/// Split text on non-alphanumeric, non-underscore chars; lowercase each token.
+pub fn tokenize(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| !t.is_empty())
-        .filter(|t| text_lower.contains(&t.to_lowercase()))
-        .count()
+        .map(|t| t.to_lowercase())
+        .collect()
 }
 
-/// Return chunk IDs ordered by how well their file path matches the query.
-/// Stops adding IDs once the estimated token count exceeds `token_budget`.
-fn select_chunk_ids(query: &str, manifest: &Manifest, token_budget: usize) -> Vec<u64> {
-    let mut scored: Vec<(&String, &Vec<u64>, usize)> = manifest
-        .iter()
-        .map(|(file, ids)| (file, ids, score_text(query, file)))
-        .collect();
-    scored.sort_by(|a, b| b.2.cmp(&a.2));
+/// Count how many tokens from `tokens` appear as substrings of `path`.
+pub fn score_file(path: &str, tokens: &[&str]) -> usize {
+    tokens.iter().filter(|&&t| path.contains(t)).count()
+}
 
-    let mut ids = Vec::new();
-    let mut tokens_used = 0usize;
-    'outer: for (_, chunk_ids, _) in scored {
-        for id in chunk_ids {
-            if tokens_used + 64 > token_budget {
-                break 'outer;
-            }
-            ids.push(*id);
-            tokens_used += 64;
+/// Chars / 4, rounded down (min 0).
+pub fn estimate_tokens(s: &str) -> usize {
+    s.len() / 4
+}
+
+/// Given `(header, body)` pairs and a token budget, return the prefix that
+/// fits within the budget.
+pub fn enforce_budget(chunks: Vec<(String, String)>, budget: usize) -> Vec<(String, String)> {
+    let mut used = 0usize;
+    let mut result = Vec::new();
+    for (h, b) in chunks {
+        let cost = estimate_tokens(&b);
+        if used + cost > budget {
+            break;
         }
+        used += cost;
+        result.push((h, b));
     }
-    ids
+    result
 }
 
-// ── anchordb integration ──────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Tool parameter type
+// ---------------------------------------------------------------------------
 
-fn load_chunk(db_path: &str, id: u64) -> Option<String> {
-    let output = Command::new("anchordb-cli")
-        .args([db_path, "load", &id.to_string()])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        String::from_utf8(output.stdout).ok()
-    } else {
-        None
-    }
+/// Parameters for the get_relevant_code tool.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RelevantCodeParams {
+    /// Search query to find relevant code.
+    pub query: String,
+    /// Optional file path hint to restrict results.
+    pub file_hint: Option<String>,
 }
 
-// ── MCP server ────────────────────────────────────────────────────────────────
-
-const TOKEN_BUDGET: usize = 2500;
+// ---------------------------------------------------------------------------
+// Server struct
+// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ContextServer {
-    manifest_path: String,
-    db_path: String,
-    tool_router: ToolRouter<ContextServer>,
+pub struct DevinServer {
+    db_path: PathBuf,
+    manifest_path: PathBuf,
+    tool_router: ToolRouter<Self>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct GetRelevantCodeParams {
-    /// Natural-language query describing what code to find.
-    query: String,
-    /// Optional file path hint to restrict search to a specific file.
-    #[serde(default)]
-    file_hint: String,
+impl std::fmt::Debug for DevinServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevinServer")
+            .field("db_path", &self.db_path)
+            .field("manifest_path", &self.manifest_path)
+            .finish()
+    }
 }
 
-#[tool_router]
-impl ContextServer {
-    fn new(manifest_path: String, db_path: String) -> Self {
+impl DevinServer {
+    pub fn new(db_path: PathBuf, manifest_path: PathBuf) -> Self {
         Self {
-            manifest_path,
             db_path,
+            manifest_path,
             tool_router: Self::tool_router(),
         }
     }
 
-    #[tool(description = "Returns source code chunks relevant to the query. Use file_hint to restrict results to a specific file.")]
-    async fn get_relevant_code(
-        &self,
-        Parameters(params): Parameters<GetRelevantCodeParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let manifest = load_manifest(&self.manifest_path).map_err(|e| {
-            McpError::internal_error(
-                "manifest_load_failed",
-                Some(serde_json::json!({ "error": e.to_string() })),
-            )
-        })?;
-
-        let effective_manifest: Manifest = if params.file_hint.is_empty() {
-            manifest
-        } else {
-            manifest
-                .into_iter()
-                .filter(|(file, _)| file.contains(&params.file_hint))
-                .collect()
+    /// Synchronous retrieval logic.
+    pub fn retrieve(&self, query: &str, file_hint: Option<&str>) -> String {
+        let manifest = match Manifest::load(&self.manifest_path) {
+            Ok(m) => m,
+            Err(_) => return String::new(),
         };
 
-        let ids = select_chunk_ids(&params.query, &effective_manifest, TOKEN_BUDGET);
+        let db = match AnchorDB::open(&self.db_path) {
+            Ok(d) => d,
+            Err(_) => return String::new(),
+        };
 
-        if ids.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No relevant code chunks found.",
-            )]));
+        let tokens: Vec<String> = tokenize(query);
+        let token_refs: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
+
+        // Score and optionally filter files.
+        let mut scored: Vec<(usize, String)> = manifest
+            .entries
+            .keys()
+            .filter_map(|file| {
+                if let Some(hint) = file_hint {
+                    if !file.contains(hint) {
+                        return None;
+                    }
+                }
+                let score = score_file(file, &token_refs);
+                if score > 0 { Some((score, file.clone())) } else { None }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Gather (header, body) pairs for all matching chunks.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (_score, file) in &scored {
+            if let Some(ids) = manifest.get_ids(file) {
+                for &id in ids {
+                    if let Ok(Some(body)) = db.load(id) {
+                        pairs.push((file.clone(), body));
+                    }
+                }
+            }
         }
 
-        let mut parts = Vec::new();
-        let mut char_budget = TOKEN_BUDGET * 4;
+        let within_budget = enforce_budget(pairs, 2500);
 
-        for id in ids {
-            if char_budget == 0 {
-                break;
-            }
-            if let Some(text) = load_chunk(&self.db_path, id) {
-                let trimmed = if text.len() > char_budget {
-                    text[..char_budget].to_string()
-                } else {
-                    text.clone()
-                };
-                char_budget = char_budget.saturating_sub(trimmed.len());
-                parts.push(trimmed);
-            }
+        let mut out = String::new();
+        for (file, body) in within_budget {
+            out.push_str(&format!("# {file}\n{body}\n\n"));
         }
-
-        Ok(CallToolResult::success(vec![Content::text(parts.join("\n\n"))]))
+        out
     }
 }
 
-#[tool_handler]
-impl ServerHandler for ContextServer {
+// ---------------------------------------------------------------------------
+// Tool routing via rmcp macros
+// ---------------------------------------------------------------------------
+
+#[tool_router]
+impl DevinServer {
+    /// Return relevant code chunks for a query.
+    #[tool(description = "Return code chunks relevant to a query, optionally filtered by file path hint.")]
+    async fn get_relevant_code(
+        &self,
+        Parameters(params): Parameters<RelevantCodeParams>,
+    ) -> String {
+        self.retrieve(&params.query, params.file_hint.as_deref())
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for DevinServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_server_info(Implementation::new("devin-mcp", env!("CARGO_PKG_VERSION")))
+        ServerInfo::default().with_server_info(Implementation::new(
+            "devin-mcp",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 }
 
-// ── entry point ───────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+fn default_db_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("devin")
+        .join("chunks.db")
+}
+
+fn default_manifest_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("devin")
+        .join("manifest.json")
+}
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+async fn main() {
+    let db_path = std::env::var("DEVIN_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_db_path());
 
     let manifest_path = std::env::var("DEVIN_MANIFEST_PATH")
-        .unwrap_or_else(|_| format!("{}/.local/share/devin/manifest.json",
-            std::env::var("HOME").unwrap_or_default()));
-    let db_path = std::env::var("DEVIN_DB_PATH")
-        .unwrap_or_else(|_| format!("{}/.local/share/devin/chunks.db",
-            std::env::var("HOME").unwrap_or_default()));
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_manifest_path());
 
-    let service = ContextServer::new(manifest_path, db_path)
-        .serve(rmcp::transport::stdio())
-        .await?;
-
-    service.waiting().await?;
-    Ok(())
+    let server = DevinServer::new(db_path, manifest_path);
+    let transport = stdio();
+    server
+        .serve(transport)
+        .await
+        .expect("MCP server failed")
+        .waiting()
+        .await
+        .expect("MCP server waiting failed");
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn score_counts_matching_tokens() {
-        assert_eq!(score_text("foo bar", "foo baz qux"), 1);
-        assert_eq!(score_text("foo bar", "foo bar baz"), 2);
-        assert_eq!(score_text("foo bar", "nothing here"), 0);
+    fn test_tokenize() {
+        let tokens = tokenize("parse_blocks in src/diff.rs");
+        assert!(tokens.contains(&"parse_blocks".to_string()));
+        assert!(tokens.contains(&"src".to_string()));
+        assert!(tokens.contains(&"diff".to_string()));
+        assert!(tokens.contains(&"rs".to_string()));
     }
 
     #[test]
-    fn score_is_case_insensitive() {
-        assert_eq!(score_text("Foo BAR", "foo bar baz"), 2);
+    fn test_score_file_match() {
+        assert_eq!(score_file("src/diff.rs", &["diff"]), 1);
     }
 
     #[test]
-    fn empty_query_scores_zero() {
-        assert_eq!(score_text("", "foo bar baz"), 0);
+    fn test_score_file_no_match() {
+        assert_eq!(score_file("src/parser.rs", &["diff"]), 0);
     }
 
     #[test]
-    fn select_returns_higher_scored_files_first() {
-        let mut manifest = Manifest::new();
-        manifest.insert("src/parser.rs".into(), vec![1, 2]);
-        manifest.insert("src/main.rs".into(), vec![3]);
-
-        // "parser" matches "src/parser.rs" but not "src/main.rs"
-        let ids = select_chunk_ids("parser", &manifest, 10000);
-        assert_eq!(ids[0], 1);
-        assert_eq!(ids[1], 2);
-        assert_eq!(ids[2], 3);
+    fn test_score_file_multi() {
+        assert_eq!(score_file("src/parse_diff.rs", &["parse", "diff"]), 2);
     }
 
     #[test]
-    fn select_respects_token_budget() {
-        let mut manifest = Manifest::new();
-        manifest.insert("src/a.rs".into(), vec![1, 2, 3, 4, 5]);
+    fn test_estimate_tokens() {
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+        assert_eq!(estimate_tokens(""), 0);
+    }
 
-        // budget of 100 tokens / 64 per chunk → only 1 chunk fits
-        let ids = select_chunk_ids("anything", &manifest, 100);
-        assert_eq!(ids.len(), 1);
+    #[test]
+    fn test_enforce_budget_fits() {
+        let body = "a".repeat(100);
+        let chunks = vec![
+            ("h1".to_string(), body.clone()),
+            ("h2".to_string(), body.clone()),
+        ];
+        // Each body is 100 chars = 25 tokens; 25+25=50 < 100 budget
+        let result = enforce_budget(chunks, 100);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_enforce_budget_overflow() {
+        let big = "a".repeat(8000);
+        let med = "a".repeat(4000);
+        let chunks = vec![
+            ("h1".to_string(), big),
+            ("h2".to_string(), med),
+        ];
+        // 8000/4=2000 tokens fits in 2500; next 4000/4=1000 would push to 3000 > 2500
+        let result = enforce_budget(chunks, 2500);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_enforce_budget_empty() {
+        let result = enforce_budget(vec![], 2500);
+        assert_eq!(result.len(), 0);
     }
 }

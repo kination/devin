@@ -7,6 +7,8 @@ pub enum DevinError {
     Http(reqwest::Error),
     ApfelNotFound,
     ApfelTimeout,
+    IndexNotBuilt,
+    McpBinaryNotFound,
 }
 
 impl fmt::Display for DevinError {
@@ -20,6 +22,14 @@ impl fmt::Display for DevinError {
                 "apfel not found.\nInstallation: brew tap Arthur-Ficial/tap && brew install Arthur-Ficial/tap/apfel"
             ),
             DevinError::ApfelTimeout => write!(f, "apfel server start timeout (exceeded 10s)"),
+            DevinError::IndexNotBuilt => write!(
+                f,
+                "Index not found. Run `devin index <path>` first."
+            ),
+            DevinError::McpBinaryNotFound => write!(
+                f,
+                "devin-mcp binary not found next to devin binary. Run `cargo build` to build both."
+            ),
         }
     }
 }

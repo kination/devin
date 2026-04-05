@@ -4,10 +4,17 @@ mod chat;
 mod cli;
 mod diff;
 mod error;
+mod indexer;
+mod manifest;
+mod parser;
+mod paths;
 mod tui;
 
+use std::path::PathBuf;
+
 use clap::Parser;
-use cli::Cli;
+use paths::{default_db_path, default_manifest_path};
+use cli::{Cli, Command};
 
 fn main() {
     let args = Cli::parse();
@@ -23,6 +30,11 @@ fn main() {
         }
     }
 
+    if let Some(Command::Index { path }) = &args.command {
+        run_index(path);
+        return;
+    }
+
     let files = collect_files(&args);
 
     let result = if let Some(query) = &args.query {
@@ -34,6 +46,38 @@ fn main() {
     if let Err(e) = result {
         eprintln!("Error: {e}");
         std::process::exit(1);
+    }
+}
+
+fn run_index(path: &PathBuf) {
+    use anchordb::AnchorDB;
+
+    let db_path = default_db_path();
+    let manifest_path = default_manifest_path();
+
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let db = match AnchorDB::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("Failed to open anchordb at {}: {e}", db_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    match indexer::index_project(path, &db, &manifest_path) {
+        Ok(stats) => {
+            println!(
+                "Indexed {} files, {} chunks stored. ({} skipped)",
+                stats.files_indexed, stats.chunks_saved, stats.files_skipped
+            );
+        }
+        Err(e) => {
+            eprintln!("Indexing failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

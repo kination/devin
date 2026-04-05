@@ -1,13 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo search:*)",
-      "WebSearch",
-      "Bash(cargo add:*)",
-      "WebFetch(domain:docs.rs)",
-      "Bash(gh api:*)",
-      "Bash(cargo test:*)",
-      "Bash(cargo build:*)"
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }
