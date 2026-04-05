@@ -2,6 +2,18 @@
 
 > **Work in progress.** Expect breaking changes.
 
+```sh
+devin
+
+ ▝▜▄     Devin CLI v0.0.1
+   ▝▜▄
+  ▗▟▀    Signed in as user
+ ▝▀      Plan: apple-foundationmodel
+
+
+Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models
+```
+
 An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-Ficial/apfel).
 
 ## Prerequisites
