@@ -5,7 +5,7 @@ use crossterm::terminal;
 use crossterm::QueueableCommand;
 
 use crate::apfel::{Client, Message, build_file_context, ensure_server, model};
-use crate::diff::parse_blocks;
+use crate::diff::{compute_diff, parse_blocks, DiffKind};
 use crate::error::Result;
 
 
@@ -38,15 +38,10 @@ pub fn run(files: &[String]) -> Result<()> {
 
         match input.as_str() {
             "/exit" | "/quit" => break,
-            s if s.starts_with("/apply") => { 
+            s if s.starts_with("/run") => {
                 print_divider_bottom()?;
-                handle_apply(s, &history); 
-                continue; 
-            }
-            s if s.starts_with("/run")   => { 
-                print_divider_bottom()?;
-                handle_run(s, &mut history); 
-                continue; 
+                handle_run(s, &mut history);
+                continue;
             }
             _ => {}
         }
@@ -82,10 +77,10 @@ pub fn run(files: &[String]) -> Result<()> {
         println!("\n");
         history.push(Message::assistant(&response));
 
-        // --- code block action hints ---
+        // --- permission-gated file writes ---
         let blocks = parse_blocks(&response);
-        if !blocks.is_empty() {
-            print_block_actions(&blocks)?;
+        for block in &blocks {
+            prompt_and_write(block)?;
         }
 
         print_footer(files)?;
@@ -150,7 +145,7 @@ fn print_header(_files: &[String]) -> Result<()> {
     
     write!(out, "│")?;
     out.queue(ResetColor)?;
-    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM, and other open models")?;
+    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
     write!(out, "{}", " ".repeat(width.saturating_sub(60)))?;
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "│")?;
@@ -284,69 +279,105 @@ fn print_footer(files: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn print_block_actions(blocks: &[crate::diff::CodeBlock]) -> Result<()> {
+/// Show diff and ask [y/N] permission before writing. Claude Code style.
+pub(crate) fn prompt_and_write(block: &crate::diff::CodeBlock) -> Result<()> {
     let mut out = io::stdout();
-    let width = term_width().saturating_sub(4);
 
+    // Resolve target path: use detected filename or ask user
+    let path = match &block.filename {
+        Some(f) => f.clone(),
+        None => {
+            out.queue(SetForegroundColor(MUTED))?;
+            write!(out, "\n  write to: ")?;
+            out.queue(ResetColor)?;
+            out.flush()?;
+            let mut line = String::new();
+            io::stdin().lock().read_line(&mut line)?;
+            let p = line.trim().to_string();
+            if p.is_empty() { return Ok(()); }
+            p
+        }
+    };
+
+    // Render diff box
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let diff = compute_diff(&old, &block.content);
+    let has_changes = diff.iter().any(|l| l.kind != DiffKind::Context && l.content != "⋯");
+
+    if !has_changes {
+        out.queue(SetForegroundColor(MUTED))?;
+        writeln!(out, "\n  {path} — no changes")?;
+        out.queue(ResetColor)?;
+        out.flush()?;
+        return Ok(());
+    }
+
+    let width = term_width().saturating_sub(4);
+    let label = format!(" {path} ");
+    let bar = "─".repeat(width.saturating_sub(label.len() + 2));
+
+    writeln!(out)?;
     out.queue(SetForegroundColor(BORDER))?;
-    writeln!(out, "  {}", "─".repeat(width))?;
+    write!(out, "  ┌{label}")?;
+    writeln!(out, "{bar}┐")?;
     out.queue(ResetColor)?;
 
-    for (i, block) in blocks.iter().enumerate() {
-        let name = block.filename.as_deref().unwrap_or("untitled");
-        write!(out, "  ")?;
+    for line in &diff {
+        match line.kind {
+            DiffKind::Add => {
+                out.queue(SetForegroundColor(SUCCESS))?;
+                writeln!(out, "  │ + {}", line.content)?;
+            }
+            DiffKind::Remove => {
+                out.queue(SetForegroundColor(Color::Rgb { r: 220, g: 80, b: 80 }))?;
+                writeln!(out, "  │ - {}", line.content)?;
+            }
+            DiffKind::Context => {
+                out.queue(SetForegroundColor(MUTED))?;
+                writeln!(out, "  │   {}", line.content)?;
+            }
+        }
+    }
+
+    out.queue(SetForegroundColor(BORDER))?;
+    writeln!(out, "  └{}", "─".repeat(width.saturating_sub(2)))?;
+    out.queue(ResetColor)?;
+
+    // Permission prompt
+    out.queue(SetForegroundColor(Color::White))?;
+    write!(out, "\n  Write to {path}? ")?;
+    out.queue(SetForegroundColor(MUTED))?;
+    write!(out, "[y/N] ")?;
+    out.queue(ResetColor)?;
+    out.flush()?;
+
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+
+    if answer.trim().eq_ignore_ascii_case("y") {
+        match std::fs::write(&path, &block.content) {
+            Ok(_) => {
+                out.queue(SetForegroundColor(SUCCESS))?;
+                write!(out, "  ✓ ")?;
+                out.queue(ResetColor)?;
+                writeln!(out, "written to {path}")?;
+            }
+            Err(e) => {
+                out.queue(SetForegroundColor(Color::Rgb { r: 220, g: 80, b: 80 }))?;
+                write!(out, "  ✗ ")?;
+                out.queue(ResetColor)?;
+                writeln!(out, "{e}")?;
+            }
+        }
+    } else {
         out.queue(SetForegroundColor(MUTED))?;
-        write!(out, "[")?;
-        out.queue(SetForegroundColor(BRAND))?;
-        out.queue(SetAttribute(Attribute::Bold))?;
-        write!(out, "{}", i + 1)?;
-        out.queue(ResetColor)?;
-        out.queue(SetForegroundColor(MUTED))?;
-        write!(out, "] ")?;
-        out.queue(ResetColor)?;
-        out.queue(SetForegroundColor(Color::White))?;
-        writeln!(out, "{name}")?;
+        writeln!(out, "  skipped")?;
         out.queue(ResetColor)?;
     }
 
-    out.queue(SetForegroundColor(MUTED))?;
-    writeln!(out, "\n  /apply <n> [path] to write  ·  /apply <n> to use detected path")?;
-    out.queue(ResetColor)?;
     writeln!(out)?;
     out.flush()?;
     Ok(())
-}
-
-// ── command handlers ──────────────────────────────────────────────────────────
-
-fn handle_apply(input: &str, history: &[Message]) {
-    let parts: Vec<&str> = input.split_whitespace().collect();
-    let idx = match parts.get(1).and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0) {
-        Some(n) => n - 1,
-        None => { eprintln!("  usage: /apply <n> [path]"); return; }
-    };
-
-    let response = history.iter().rev()
-        .find(|m| m.role == "assistant")
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
-
-    let blocks = parse_blocks(response);
-    let block = match blocks.get(idx) {
-        Some(b) => b,
-        None => { eprintln!("  block {} not found", idx + 1); return; }
-    };
-
-    let path = parts.get(2).map(|s| s.to_string()).or_else(|| block.filename.clone());
-    match path {
-        Some(p) => match std::fs::write(&p, &block.content) {
-            Ok(_) => {
-                let _ = print_status_box(&format!("WriteFile {p}"));
-            }
-            Err(e) => eprintln!("  error: {e}"),
-        },
-        None => eprintln!("  no filename — use /apply <n> <path>"),
-    }
 }
 
 fn handle_run(input: &str, history: &mut Vec<Message>) {

@@ -1,5 +1,7 @@
 # devin
 
+> **Work in progress.** Expect breaking changes.
+
 An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-Ficial/apfel).
 
 ## Prerequisites
