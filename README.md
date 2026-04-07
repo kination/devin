@@ -41,13 +41,26 @@ devin "Any bugs here?" -f src/apfel.rs
 devin index <path>
 ```
 
+## .devin-context
+
+Create a `.devin-context` file in your project root to automatically attach files using glob patterns:
+
+```text
+src/**/*.rs
+docs/*.md
+# comments are ignored
+```
+
+Use `--no-context` to skip this auto-attachment.
+
 ## Chat Commands
 
 | Command | Description |
 |---|---|
-| `/apply <n> [path]` | Write the nth code block to a file. Path is auto-detected if omitted. |
-| `/run <cmd>` | Run a shell command and share its output with the assistant. |
-| `/exit` | End the session. |
+| `/run <cmd>` | Execute a shell command and share the output with devin. |
+| `/exit`, `/quit` | End the session. |
+
+In chat, you can also mention files using `@path/to/file` to instantly add them to the conversation context.
 
 ## Backend Configuration
 
