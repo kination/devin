@@ -1,4 +1,6 @@
-use clap::Parser;
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -33,4 +35,16 @@ pub struct Cli {
     /// Skip .devin-context auto-attach
     #[arg(long)]
     pub no_context: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Index a project directory into anchordb
+    Index {
+        /// Path to the project to index
+        path: PathBuf,
+    },
 }

@@ -50,28 +50,59 @@ impl Drop for BackendHandle {
     }
 }
 
+/// Returns the devin-mcp binary path if it exists alongside the running devin binary.
+fn mcp_binary_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let mcp = dir.join("devin-mcp");
+    if mcp.is_file() { Some(mcp) } else { None }
+}
+
+/// Returns true if manifest.json exists at the default location (index has been built).
+fn index_exists() -> bool {
+    crate::paths::default_manifest_path().exists()
+}
+
 /// Use the server if it's already running, otherwise start apfel.
 pub fn ensure_server() -> Result<BackendHandle> {
     if server_reachable() {
         return Ok(BackendHandle::External);
     }
 
-    // Start apfel after checking if it's installed
     check_installed()?;
 
-    let child = Command::new("apfel")
-        .args([
-            "--serve",
-            "--port", "11435",
-            "--context-strategy", "summarize",
-            "--context-output-reserve", "600",
-            "--system", SYSTEM_PROMPT,
-        ])
+    let db_path = crate::paths::default_db_path();
+    let manifest_path = crate::paths::default_manifest_path();
+
+    let mut cmd = Command::new("apfel");
+    cmd.args([
+        "--serve",
+        "--port", "11435",
+        "--context-strategy", "summarize",
+        "--context-output-reserve", "600",
+        "--system", SYSTEM_PROMPT,
+    ]);
+
+    // Wire devin-mcp via apfel's --mcp <path> flag.
+    // apfel --help output: --mcp <path>   Attach MCP tool server (repeatable)
+    // apfel spawns the binary directly; env vars are passed via the apfel process environment.
+    if let Some(mcp_bin) = mcp_binary_path() {
+        if index_exists() {
+            cmd.env("DEVIN_DB_PATH", &db_path);
+            cmd.env("DEVIN_MANIFEST_PATH", &manifest_path);
+            cmd.args(["--mcp", mcp_bin.to_str().unwrap_or("devin-mcp")]);
+        } else {
+            eprintln!("  devin: index not found — run `devin index <path>` for code context");
+        }
+    } else {
+        eprintln!("  devin: devin-mcp binary not found — MCP context disabled");
+    }
+
+    let child = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
 
-    // Wait up to 10 seconds for the server to be ready
     for _ in 0..20 {
         std::thread::sleep(Duration::from_millis(500));
         if server_reachable() {

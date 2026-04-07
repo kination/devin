@@ -25,20 +25,20 @@ An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-
 ## Usage
 
 ```bash
-# Start interactive chat
+# Interactive chat (default — no subcommand needed)
 devin
 
-# Start chat with specific files as context
+# Attach files as context
 devin -f src/main.rs -f src/lib.rs
 
-# Single question (non-interactive)
-devin "How do I use this?"
+# Single question, stdout
+devin "What does ensure_server do?"
 
-# Single question with file context and diff review before writing
-devin "Add a logout method to Auth" -f src/auth.rs --diff
+# Single question with file context
+devin "Any bugs here?" -f src/apfel.rs
 
-# Pipe-friendly raw output
-devin "List all functions in this file" -f src/cli.rs --print
+# Index a project for code context (run once before chatting)
+devin index <path>
 ```
 
 ## .devin-context
@@ -77,19 +77,19 @@ Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
 ### Ollama
 
 ```bash
-APFEL_BASE=http://localhost:11434 devin chat
+APFEL_BASE=http://localhost:11434 devin
 ```
 
 Model is auto-detected from Ollama's model list. To pin a specific model:
 
 ```bash
-APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin chat
+APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin
 ```
 
 ### Any OpenAI-compatible server
 
 ```bash
-APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin chat
+APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin
 ```
 
 ## Environment Variables
