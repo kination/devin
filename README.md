@@ -25,17 +25,20 @@ An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-
 ## Usage
 
 ```bash
-# Interactive chat (uses built-in Mac LLM by default)
-devin chat
+# Interactive chat (default — no subcommand needed)
+devin
 
 # Attach files as context
-devin chat -f src/main.rs -f src/lib.rs
+devin -f src/main.rs -f src/lib.rs
 
 # Single question, stdout
-devin ask "What does ensure_server do?"
+devin "What does ensure_server do?"
 
 # Single question with file context
-devin ask "Any bugs here?" -f src/apfel.rs
+devin "Any bugs here?" -f src/apfel.rs
+
+# Index a project for code context (run once before chatting)
+devin index <path>
 ```
 
 ## Chat Commands
@@ -53,7 +56,7 @@ devin uses Apple's built-in on-device LLM via apfel by default. No network, no A
 ### Default (built-in Mac LLM)
 
 ```bash
-devin chat
+devin
 ```
 
 Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
@@ -61,19 +64,19 @@ Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
 ### Ollama
 
 ```bash
-APFEL_BASE=http://localhost:11434 devin chat
+APFEL_BASE=http://localhost:11434 devin
 ```
 
 Model is auto-detected from Ollama's model list. To pin a specific model:
 
 ```bash
-APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin chat
+APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin
 ```
 
 ### Any OpenAI-compatible server
 
 ```bash
-APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin chat
+APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin
 ```
 
 ## Environment Variables
