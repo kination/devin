@@ -319,39 +319,31 @@ fn print_header(_files: &[String]) -> Result<()> {
     let mut out = io::stdout();
     println!();
 
-    out.queue(SetAttribute(Attribute::Bold))?;
-    writeln!(out, "entic")?;
-    out.queue(ResetColor)?;
-    println!();
-
-    out.queue(SetForegroundColor(BRAND))?;
-    write!(out, " ▝▜▄")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    write!(out, "   ▲")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
-    writeln!(out, "     Entic CLI v{}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out, "      Entic CLI v{}", env!("CARGO_PKG_VERSION"))?;
 
-    out.queue(SetForegroundColor(BRAND))?;
-    writeln!(out, "   ▝▜▄")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    writeln!(out, "  ▲▲▲")?;
 
-    write!(out, "  ▗▟▀")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    write!(out, " ▲▲▲▲▲")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
-    write!(out, "    Signed in as ")?;
+    write!(out, "    Created by ")?;
     out.queue(SetAttribute(Attribute::Bold))?;
-    write!(out, "kination")?;
+    writeln!(out, "kination")?;
     out.queue(ResetColor)?;
-    writeln!(out, " /auth")?;
 
-    out.queue(SetForegroundColor(BRAND))?;
-    write!(out, " ▝▀")?;
+    out.queue(SetForegroundColor(MUTED))?;
+    write!(out, "   █")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
     write!(out, "      Plan: ")?;
     out.queue(SetForegroundColor(MUTED))?;
-    write!(out, "{} ", model())?;
-    out.queue(ResetColor)?;
-    out.queue(SetForegroundColor(Color::White))?;
-    writeln!(out, "/upgrade")?;
+    writeln!(out, "{}", model())?;
     out.queue(ResetColor)?;
     println!();
 
