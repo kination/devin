@@ -6,7 +6,8 @@ use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForeground
 use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
 use crossterm::QueueableCommand;
 
-use crate::apfel::{Client, Message, build_file_context, ensure_server, extract_mentioned_files, model};
+use crate::apfel::{Client, Message, build_file_context, ensure_server, model};
+use crate::fs_context;
 use crate::memory::MemoryStore;
 use crate::slow::{SlowSession, UserSignal};
 use crate::diff::{compute_diff, parse_blocks, DiffKind};
@@ -28,6 +29,7 @@ pub fn run(files: &[String], quick: bool) -> Result<()> {
 
     let mut history: Vec<Message> = Vec::new();
     let mut prompt_history: Vec<String> = Vec::new();
+    let mut session = fs_context::SessionContext::new();
 
     loop {
         print_divider_top()?;
@@ -72,9 +74,16 @@ pub fn run(files: &[String], quick: bool) -> Result<()> {
 
         print_divider_bottom()?;
 
-        // Auto-attach any files the user mentioned by path in their message
-        let mentioned = extract_mentioned_files(&input);
-        let mention_ctx = build_file_context(&mentioned);
+        // Detect paths/names mentioned in the message and attach their content.
+        // session.resolve re-injects previously detected files when nothing new is found.
+        let detected = fs_context::detect_paths(&input);
+        let to_inject = session.resolve(detected);
+        let mentioned: Vec<String> = to_inject
+            .iter()
+            .filter(|p| p.kind == fs_context::PathKind::File)
+            .map(|p| p.resolved.to_string_lossy().into_owned())
+            .collect();
+        let mention_ctx: String = to_inject.iter().map(|p| fs_context::read_path(p)).collect();
 
         let memory_ctx = memory.build_context();
         let content = {

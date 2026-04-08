@@ -4,8 +4,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"@?(/[^\s'"<>(),;]+|\.{1,2}/[^\s'"<>(),;]+|[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)"#)
-        .expect("invalid regex")
+    Regex::new(
+        r#"@?(/[^\s'"<>(),;]+|\.{1,2}/[^\s'"<>(),;]+|[a-zA-Z0-9_][a-zA-Z0-9_\-]*/[^\s'"<>(),;]*|[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)"#,
+    )
+    .expect("invalid regex")
 });
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +111,7 @@ fn read_dir_content(path: &PathBuf) -> String {
 }
 
 /// Detect file/dir paths mentioned in `input`.
-/// Only returns paths that actually exist on disk.
+/// When a bare name doesn't resolve directly, searches the project tree.
 pub fn detect_paths(input: &str) -> Vec<DetectedPath> {
     use std::env;
 
@@ -119,7 +121,6 @@ pub fn detect_paths(input: &str) -> Vec<DetectedPath> {
 
     for m in PATH_RE.find_iter(input) {
         let raw = m.as_str().to_string();
-        // Strip leading '@' to get the actual path string.
         let path_str = raw.strip_prefix('@').unwrap_or(&raw);
 
         let candidate = if path_str.starts_with('/') {
@@ -128,23 +129,73 @@ pub fn detect_paths(input: &str) -> Vec<DetectedPath> {
             cwd.join(path_str)
         };
 
-        let resolved = match candidate.canonicalize() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        if seen.contains(&resolved) {
-            continue;
+        match candidate.canonicalize() {
+            Ok(resolved) => {
+                if seen.insert(resolved.clone()) {
+                    let kind = if resolved.is_dir() { PathKind::Dir } else { PathKind::File };
+                    results.push(DetectedPath { raw, resolved, kind });
+                }
+            }
+            Err(_) => {
+                // Direct resolution failed. For bare names (no '/' except trailing),
+                // fall back to a project-wide search.
+                let normalized = path_str.trim_end_matches('/');
+                if !normalized.contains('/') {
+                    for found in search_project_for_name(normalized) {
+                        if seen.insert(found.resolved.clone()) {
+                            results.push(found);
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        let kind = if resolved.is_dir() {
-            PathKind::Dir
-        } else {
-            PathKind::File
-        };
+    results
+}
 
-        seen.insert(resolved.clone());
-        results.push(DetectedPath { raw, resolved, kind });
+const SEARCH_LIMIT: usize = 5;
+
+static IGNORED_DIRS: &[&str] = &[
+    ".git", "target", "node_modules", ".build", "dist", ".next", "__pycache__", ".cache",
+];
+
+/// Search the project tree (from cwd) for files or directories whose name exactly
+/// matches `name`. Returns up to SEARCH_LIMIT results.
+pub fn search_project_for_name(name: &str) -> Vec<DetectedPath> {
+    use walkdir::WalkDir;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let name_lower = name.to_lowercase();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut results = Vec::new();
+
+    'walk: for entry in WalkDir::new(&cwd)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let n = e.file_name().to_str().unwrap_or("");
+            !IGNORED_DIRS.contains(&n)
+        })
+        .filter_map(|e| e.ok())
+        .skip(1) // skip cwd itself
+    {
+        let file_name = entry.file_name().to_str().unwrap_or("");
+        if file_name.to_lowercase() == name_lower {
+            if let Ok(resolved) = entry.path().canonicalize() {
+                if seen.insert(resolved.clone()) {
+                    let kind = if resolved.is_dir() { PathKind::Dir } else { PathKind::File };
+                    results.push(DetectedPath {
+                        raw: name.to_string(),
+                        resolved,
+                        kind,
+                    });
+                    if results.len() >= SEARCH_LIMIT {
+                        break 'walk;
+                    }
+                }
+            }
+        }
     }
 
     results
@@ -179,6 +230,39 @@ where
     let to_read: Vec<_> = already_approved.into_iter().chain(newly_approved).collect();
 
     to_read.iter().map(|p| read_path(p)).collect::<String>()
+}
+
+pub const REINJECT_LIMIT: usize = 3;
+
+pub struct SessionContext {
+    pub files: Vec<DetectedPath>,
+    seen: HashSet<PathBuf>,
+}
+
+impl SessionContext {
+    pub fn new() -> Self {
+        Self {
+            files: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+
+    /// Per-turn entry point.
+    ///
+    /// - `detected` non-empty: prepend new unique paths to cache, return `detected`.
+    /// - `detected` empty: return up to `REINJECT_LIMIT` most-recent cached paths.
+    pub fn resolve(&mut self, detected: Vec<DetectedPath>) -> Vec<DetectedPath> {
+        if detected.is_empty() {
+            return self.files.iter().take(REINJECT_LIMIT).cloned().collect();
+        }
+        // Prepend in reverse so the first item in `detected` ends up at index 0.
+        for path in detected.iter().rev() {
+            if self.seen.insert(path.resolved.clone()) {
+                self.files.insert(0, path.clone());
+            }
+        }
+        detected
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +400,73 @@ mod tests {
         });
         assert!(!prompt_called, "should not prompt for already-approved path");
         assert!(ctx.contains("fn cached()"));
+    }
+
+    // ── SessionContext tests ──────────────────────────────────────────────────
+
+    fn make_detected(dir: &TempDir, name: &str) -> DetectedPath {
+        let path = dir.path().join(name);
+        fs::write(&path, "content").unwrap();
+        DetectedPath {
+            raw: name.to_string(),
+            resolved: path.canonicalize().unwrap(),
+            kind: PathKind::File,
+        }
+    }
+
+    #[test]
+    fn session_resolve_new_paths_returns_them_and_updates_cache() {
+        let dir = TempDir::new().unwrap();
+        let mut ctx = SessionContext::new();
+        let a = make_detected(&dir, "a.rs");
+        let result = ctx.resolve(vec![a.clone()]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].resolved, a.resolved);
+        assert_eq!(ctx.files.len(), 1);
+    }
+
+    #[test]
+    fn session_resolve_empty_returns_cached_files() {
+        let dir = TempDir::new().unwrap();
+        let mut ctx = SessionContext::new();
+        let a = make_detected(&dir, "a.rs");
+        ctx.resolve(vec![a.clone()]);
+        let result = ctx.resolve(vec![]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].resolved, a.resolved);
+    }
+
+    #[test]
+    fn session_resolve_deduplicates_same_path() {
+        let dir = TempDir::new().unwrap();
+        let mut ctx = SessionContext::new();
+        let a = make_detected(&dir, "a.rs");
+        ctx.resolve(vec![a.clone()]);
+        ctx.resolve(vec![a.clone()]);
+        assert_eq!(ctx.files.len(), 1);
+    }
+
+    #[test]
+    fn session_resolve_reinject_capped_at_limit() {
+        let dir = TempDir::new().unwrap();
+        let mut ctx = SessionContext::new();
+        for i in 0..5usize {
+            let p = make_detected(&dir, &format!("{i}.rs"));
+            ctx.resolve(vec![p]);
+        }
+        let result = ctx.resolve(vec![]);
+        assert_eq!(result.len(), REINJECT_LIMIT);
+    }
+
+    #[test]
+    fn session_resolve_new_detection_overrides_reinject() {
+        let dir = TempDir::new().unwrap();
+        let mut ctx = SessionContext::new();
+        let a = make_detected(&dir, "a.rs");
+        let b = make_detected(&dir, "b.rs");
+        ctx.resolve(vec![a]);
+        let result = ctx.resolve(vec![b.clone()]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].resolved, b.resolved);
     }
 }

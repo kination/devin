@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
-use crate::apfel::{Client, Message, build_file_context, ensure_server, extract_mentioned_files};
+use crate::apfel::{Client, Message, build_file_context, ensure_server};
+use crate::fs_context;
 use crate::memory::MemoryStore;
 use crate::diff::parse_blocks;
 use crate::error::Result;
@@ -28,7 +29,11 @@ pub fn run(query: &str, files: &[String], print_only: bool, with_diff: bool) -> 
         println!();
 
         if with_diff {
-            let mentioned = extract_mentioned_files(query);
+            let mentioned: Vec<String> = fs_context::detect_paths(query)
+                .into_iter()
+                .filter(|p| p.kind == fs_context::PathKind::File)
+                .map(|p| p.resolved.to_string_lossy().into_owned())
+                .collect();
             let blocks = parse_blocks(&response);
             for block in &blocks {
                 if block.filename.is_none() && mentioned.len() == 1 {
@@ -52,9 +57,9 @@ fn build_prompt(query: &str, files: &[String]) -> String {
     let memory_ctx = memory.build_context();
     let explicit_ctx = build_file_context(files);
 
-    // Also attach any files the user mentioned by absolute path in the query
-    let mentioned = extract_mentioned_files(query);
-    let mention_ctx = build_file_context(&mentioned);
+    // Detect paths/names mentioned in the query and attach their content.
+    let detected = fs_context::detect_paths(query);
+    let mention_ctx: String = detected.iter().map(|p| fs_context::read_path(p)).collect();
 
     let base = match (explicit_ctx.is_empty(), mention_ctx.is_empty()) {
         (true,  true)  => query.to_string(),
