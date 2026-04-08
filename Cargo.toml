@@ -1,18 +1,18 @@
 [package]
-name = "devin"
+name = "entic"
 version = "0.0.1"
 edition = "2024"
 
 [[bin]]
-name = "devin"
+name = "entic"
 path = "src/main.rs"
 
 [[bin]]
-name = "devin-mcp"
+name = "entic-mcp"
 path = "src/bin/mcp_server.rs"
 
 [lib]
-name = "devin"
+name = "entic"
 path = "src/lib.rs"
 
 [dependencies]

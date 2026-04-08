@@ -320,7 +320,7 @@ fn print_header(_files: &[String]) -> Result<()> {
     println!();
 
     out.queue(SetAttribute(Attribute::Bold))?;
-    writeln!(out, "devin")?;
+    writeln!(out, "entic")?;
     out.queue(ResetColor)?;
     println!();
 
@@ -328,7 +328,7 @@ fn print_header(_files: &[String]) -> Result<()> {
     write!(out, " ▝▜▄")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
-    writeln!(out, "     Devin CLI v{}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out, "     Entic CLI v{}", env!("CARGO_PKG_VERSION"))?;
 
     out.queue(SetForegroundColor(BRAND))?;
     writeln!(out, "   ▝▜▄")?;
@@ -363,7 +363,7 @@ fn print_header(_files: &[String]) -> Result<()> {
 
     write!(out, "│")?;
     out.queue(ResetColor)?;
-    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
+    write!(out, " Welcome to Entic CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
     write!(out, "{}", " ".repeat(width.saturating_sub(60)))?;
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "│")?;

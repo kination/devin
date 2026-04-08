@@ -1,4 +1,4 @@
-use devin::parser::{parse_file, CodeChunk};
+use entic::parser::{parse_file, CodeChunk};
 
 #[test]
 fn test_rust_fn_chunks() {

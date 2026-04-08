@@ -17,9 +17,9 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    /// Load from `.devin-memory.json` in the current directory.
+    /// Load from `.entic-memory.json` in the current directory.
     pub fn load() -> Self {
-        Self::load_from(PathBuf::from(".devin-memory.json"))
+        Self::load_from(PathBuf::from(".entic-memory.json"))
     }
 
     pub fn load_from(path: PathBuf) -> Self {
@@ -120,7 +120,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn temp_store(dir: &TempDir) -> MemoryStore {
-        let path = dir.path().join(".devin-memory.json");
+        let path = dir.path().join(".entic-memory.json");
         MemoryStore::load_from(path)
     }
 
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn save_and_reload_roundtrip() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".devin-memory.json");
+        let path = dir.path().join(".entic-memory.json");
         let mut s = MemoryStore::load_from(path.clone());
         s.conventions.push("use Result everywhere".to_string());
         s.save_to(&path);
