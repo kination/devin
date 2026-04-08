@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::error::{DevinError, Result};
+use crate::error::{EnticError, Result};
 
 /// APFEL_BASE: backend URL.
-/// Default: localhost:11435 (devin-managed apfel, avoids Ollama on 11434).
+/// Default: localhost:11435 (entic-managed apfel, avoids Ollama on 11434).
 /// Override: APFEL_BASE=http://localhost:11434 to use Ollama or another server.
 fn base_url() -> String {
     std::env::var("APFEL_BASE").unwrap_or_else(|_| "http://localhost:11435".to_string())
@@ -35,10 +35,20 @@ fn detect_model_from_server() -> Option<String> {
 const SYSTEM_PROMPT: &str = "\
 You are an AI assistant who knows code well. \
 You help with code analysis, bug fixes, refactoring, and explanations. \
-When suggesting code, always use markdown code blocks.";
+When suggesting code, always use markdown code blocks.\n\
+\n\
+If this conversation reveals a convention, gotcha, decision, or pattern worth \
+remembering for future sessions, append a MEMORY block at the very end of your response:\n\
+\n\
+<MEMORY>\n\
+{\"category\": \"gotchas\", \"content\": \"...\"}\n\
+</MEMORY>\n\
+\n\
+Only include MEMORY if genuinely useful. Omit it otherwise. \
+Categories: conventions | gotchas | decisions | patterns";
 
 pub enum BackendHandle {
-    Managed(Child),  // apfel process started directly by devin
+    Managed(Child),  // apfel process started directly by entic
     External,        // external server already running
 }
 
@@ -50,11 +60,11 @@ impl Drop for BackendHandle {
     }
 }
 
-/// Returns the devin-mcp binary path if it exists alongside the running devin binary.
+/// Returns the entic-mcp binary path if it exists alongside the running entic binary.
 fn mcp_binary_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let mcp = dir.join("devin-mcp");
+    let mcp = dir.join("entic-mcp");
     if mcp.is_file() { Some(mcp) } else { None }
 }
 
@@ -83,19 +93,19 @@ pub fn ensure_server() -> Result<BackendHandle> {
         "--system", SYSTEM_PROMPT,
     ]);
 
-    // Wire devin-mcp via apfel's --mcp <path> flag.
+    // Wire entic-mcp via apfel's --mcp <path> flag.
     // apfel --help output: --mcp <path>   Attach MCP tool server (repeatable)
     // apfel spawns the binary directly; env vars are passed via the apfel process environment.
     if let Some(mcp_bin) = mcp_binary_path() {
         if index_exists() {
-            cmd.env("DEVIN_DB_PATH", &db_path);
-            cmd.env("DEVIN_MANIFEST_PATH", &manifest_path);
-            cmd.args(["--mcp", mcp_bin.to_str().unwrap_or("devin-mcp")]);
+            cmd.env("ENTIC_DB_PATH", &db_path);
+            cmd.env("ENTIC_MANIFEST_PATH", &manifest_path);
+            cmd.args(["--mcp", mcp_bin.to_str().unwrap_or("entic-mcp")]);
         } else {
-            eprintln!("  devin: index not found — run `devin index <path>` for code context");
+            eprintln!("  entic: index not found — run `entic index <path>` for code context");
         }
     } else {
-        eprintln!("  devin: devin-mcp binary not found — MCP context disabled");
+        eprintln!("  entic: entic-mcp binary not found — MCP context disabled");
     }
 
     let child = cmd
@@ -110,7 +120,7 @@ pub fn ensure_server() -> Result<BackendHandle> {
         }
     }
 
-    Err(DevinError::ApfelTimeout)
+    Err(EnticError::ApfelTimeout)
 }
 
 fn server_reachable() -> bool {
@@ -128,8 +138,8 @@ fn check_installed() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| if s.success() { Ok(()) } else { Err(DevinError::ApfelNotFound) })
-        .unwrap_or(Err(DevinError::ApfelNotFound))
+        .map(|s| if s.success() { Ok(()) } else { Err(EnticError::ApfelNotFound) })
+        .unwrap_or(Err(EnticError::ApfelNotFound))
 }
 
 pub struct Client {

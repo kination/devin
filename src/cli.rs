@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "devin",
+    name = "entic",
     about = "On-device AI coding assistant (powered by apfel)",
     version
 )]
@@ -32,9 +32,13 @@ pub struct Cli {
     #[arg(short, long)]
     pub print: bool,
 
-    /// Skip .devin-context auto-attach
+    /// Skip .entic-context auto-attach
     #[arg(long)]
     pub no_context: bool,
+
+    /// Skip slow-develop mode for this session
+    #[arg(long)]
+    pub quick: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

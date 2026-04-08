@@ -337,27 +337,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "devin"
-version = "0.0.1"
-dependencies = [
- "anchordb",
- "clap",
- "crossterm",
- "dirs",
- "glob",
- "ratatui",
- "regex",
- "reqwest",
- "rmcp",
- "serde",
- "serde_json",
- "tempfile",
- "textwrap",
- "tokio",
- "walkdir",
-]
-
-[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,6 +387,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "entic"
+version = "0.0.1"
+dependencies = [
+ "anchordb",
+ "clap",
+ "crossterm",
+ "dirs",
+ "glob",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "textwrap",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]

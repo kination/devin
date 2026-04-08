@@ -1,17 +1,17 @@
-# devin
+# entic
 
 > **Work in progress.** Expect breaking changes.
 
 ```sh
-devin
+entic
 
- ▝▜▄     Devin CLI v0.0.1
-   ▝▜▄
-  ▗▟▀    Signed in as user
- ▝▀      Plan: apple-foundationmodel
+   ▲      Entic CLI v0.0.1
+  ▲▲▲
+ ▲▲▲▲▲    Created by kination
+   █      Plan: apple-foundationmodel
 
 
-Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models
+Welcome to Entic CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models
 ```
 
 An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-Ficial/apfel).
@@ -26,24 +26,24 @@ An on-device AI coding assistant powered by [`apfel`](https://github.com/Arthur-
 
 ```bash
 # Interactive chat (default — no subcommand needed)
-devin
+entic
 
 # Attach files as context
-devin -f src/main.rs -f src/lib.rs
+entic -f src/main.rs -f src/lib.rs
 
 # Single question, stdout
-devin "What does ensure_server do?"
+entic "What does ensure_server do?"
 
 # Single question with file context
-devin "Any bugs here?" -f src/apfel.rs
+entic "Any bugs here?" -f src/apfel.rs
 
 # Index a project for code context (run once before chatting)
-devin index <path>
+entic index <path>
 ```
 
-## .devin-context
+## .entic-context
 
-Create a `.devin-context` file in your project root to automatically attach files using glob patterns:
+Create a `.entic-context` file in your project root to automatically attach files using glob patterns:
 
 ```text
 src/**/*.rs
@@ -57,19 +57,19 @@ Use `--no-context` to skip this auto-attachment.
 
 | Command | Description |
 |---|---|
-| `/run <cmd>` | Execute a shell command and share the output with devin. |
+| `/run <cmd>` | Execute a shell command and share the output with entic. |
 | `/exit`, `/quit` | End the session. |
 
 In chat, you can also mention files using `@path/to/file` to instantly add them to the conversation context.
 
 ## Backend Configuration
 
-devin uses Apple's built-in on-device LLM via apfel by default. No network, no API key.
+entic uses Apple's built-in on-device LLM via apfel by default. No network, no API key.
 
 ### Default (built-in Mac LLM)
 
 ```bash
-devin
+entic
 ```
 
 Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
@@ -77,19 +77,19 @@ Starts apfel on port `11435` and auto-detects the model from `/v1/models`.
 ### Ollama
 
 ```bash
-APFEL_BASE=http://localhost:11434 devin
+APFEL_BASE=http://localhost:11434 entic
 ```
 
 Model is auto-detected from Ollama's model list. To pin a specific model:
 
 ```bash
-APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b devin
+APFEL_BASE=http://localhost:11434 APFEL_MODEL=qwen2.5-coder:7b entic
 ```
 
 ### Any OpenAI-compatible server
 
 ```bash
-APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model devin
+APFEL_BASE=http://localhost:8080 APFEL_MODEL=my-model entic
 ```
 
 ## Environment Variables

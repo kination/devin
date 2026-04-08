@@ -1,6 +1,6 @@
 use std::fs;
-use devin::indexer::{index_project, IndexStats};
-use devin::manifest::Manifest;
+use entic::indexer::{index_project, IndexStats};
+use entic::manifest::Manifest;
 use anchordb::AnchorDB;
 use tempfile::tempdir;
 
