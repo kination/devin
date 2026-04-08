@@ -5,10 +5,10 @@
 ```sh
 entic
 
- ▝▜▄     Entic CLI v0.0.1
-   ▝▜▄
-  ▗▟▀    Signed in as user
- ▝▀      Plan: apple-foundationmodel
+   ▲      Entic CLI v0.0.1
+  ▲▲▲
+ ▲▲▲▲▲    Created by kination
+   █      Plan: apple-foundationmodel
 
 
 Welcome to Entic CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models
