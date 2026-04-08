@@ -8,6 +8,8 @@ mod indexer;
 mod manifest;
 mod parser;
 mod paths;
+mod memory;
+mod slow;
 mod tui;
 
 use std::path::PathBuf;
@@ -40,7 +42,7 @@ fn main() {
     let result = if let Some(query) = &args.query {
         ask::run(query, &files, args.print, args.diff)
     } else {
-        tui::run(&files)
+        tui::run(&files, args.quick)
     };
 
     if let Err(e) = result {
@@ -81,7 +83,7 @@ fn run_index(path: &PathBuf) {
     }
 }
 
-/// Merge explicit -f flags with globs from .devin-context (unless --no-context).
+/// Merge explicit -f flags with globs from .entic-context (unless --no-context).
 fn collect_files(args: &Cli) -> Vec<String> {
     let mut files = args.file.clone();
 
@@ -89,7 +91,7 @@ fn collect_files(args: &Cli) -> Vec<String> {
         return files;
     }
 
-    let ctx_path = ".devin-context";
+    let ctx_path = ".entic-context";
     let Ok(content) = std::fs::read_to_string(ctx_path) else {
         return files;
     };
@@ -109,7 +111,7 @@ fn collect_files(args: &Cli) -> Vec<String> {
                     }
                 }
             }
-            Err(e) => eprintln!("  .devin-context: bad pattern {line:?}: {e}"),
+            Err(e) => eprintln!("  .entic-context: bad pattern {line:?}: {e}"),
         }
     }
 

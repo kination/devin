@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anchordb::AnchorDB;
-use devin::manifest::Manifest;
+use entic::manifest::Manifest;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -69,22 +69,22 @@ pub struct RelevantCodeParams {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct DevinServer {
+pub struct EnticServer {
     db_path: PathBuf,
     manifest_path: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 
-impl std::fmt::Debug for DevinServer {
+impl std::fmt::Debug for EnticServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DevinServer")
+        f.debug_struct("EnticServer")
             .field("db_path", &self.db_path)
             .field("manifest_path", &self.manifest_path)
             .finish()
     }
 }
 
-impl DevinServer {
+impl EnticServer {
     pub fn new(db_path: PathBuf, manifest_path: PathBuf) -> Self {
         Self {
             db_path,
@@ -152,7 +152,7 @@ impl DevinServer {
 // ---------------------------------------------------------------------------
 
 #[tool_router]
-impl DevinServer {
+impl EnticServer {
     /// Return relevant code chunks for a query.
     #[tool(description = "Return code chunks relevant to a query, optionally filtered by file path hint.")]
     async fn get_relevant_code(
@@ -164,10 +164,10 @@ impl DevinServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for DevinServer {
+impl ServerHandler for EnticServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::default().with_server_info(Implementation::new(
-            "devin-mcp",
+            "entic-mcp",
             env!("CARGO_PKG_VERSION"),
         ))
     }
@@ -180,28 +180,28 @@ impl ServerHandler for DevinServer {
 fn default_db_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("devin")
+        .join("entic")
         .join("chunks.db")
 }
 
 fn default_manifest_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("devin")
+        .join("entic")
         .join("manifest.json")
 }
 
 #[tokio::main]
 async fn main() {
-    let db_path = std::env::var("DEVIN_DB_PATH")
+    let db_path = std::env::var("ENTIC_DB_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_db_path());
 
-    let manifest_path = std::env::var("DEVIN_MANIFEST_PATH")
+    let manifest_path = std::env::var("ENTIC_MANIFEST_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_manifest_path());
 
-    let server = DevinServer::new(db_path, manifest_path);
+    let server = EnticServer::new(db_path, manifest_path);
     let transport = stdio();
     server
         .serve(transport)

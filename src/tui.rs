@@ -7,6 +7,8 @@ use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
 use crossterm::QueueableCommand;
 
 use crate::apfel::{Client, Message, build_file_context, ensure_server, extract_mentioned_files, model};
+use crate::memory::MemoryStore;
+use crate::slow::{SlowSession, UserSignal};
 use crate::diff::{compute_diff, parse_blocks, DiffKind};
 use crate::error::Result;
 
@@ -15,10 +17,12 @@ const MUTED:   Color = Color::Rgb { r: 154, g: 160, b: 166 };
 const SUCCESS: Color = Color::Rgb { r: 129, g: 201, b: 149 };
 const BORDER:  Color = Color::Rgb { r: 60,  g: 64,  b: 67  };
 
-pub fn run(files: &[String]) -> Result<()> {
+pub fn run(files: &[String], quick: bool) -> Result<()> {
     let _server = ensure_server()?;
     let client   = Client::new();
     let file_ctx = build_file_context(files);
+    let mut slow = SlowSession::new(!quick);
+    let mut memory = MemoryStore::load();
 
     print_header(files)?;
 
@@ -48,6 +52,21 @@ pub fn run(files: &[String]) -> Result<()> {
                 handle_run(s, &mut history);
                 continue;
             }
+            "/quick" => {
+                slow.disable();
+                print_divider_bottom()?;
+                continue;
+            }
+            "/done" => {
+                slow.advance(UserSignal::Done);
+                print_divider_bottom()?;
+                continue;
+            }
+            "/review" => {
+                slow.advance(UserSignal::Review);
+                print_divider_bottom()?;
+                continue;
+            }
             _ => {}
         }
 
@@ -57,9 +76,15 @@ pub fn run(files: &[String]) -> Result<()> {
         let mentioned = extract_mentioned_files(&input);
         let mention_ctx = build_file_context(&mentioned);
 
+        let memory_ctx = memory.build_context();
         let content = {
-            let base_ctx = if history.is_empty() && !file_ctx.is_empty() {
-                format!("{file_ctx}\n\n{input}")
+            let base_ctx = if history.is_empty() {
+                match (file_ctx.is_empty(), memory_ctx.is_empty()) {
+                    (false, false) => format!("{memory_ctx}\n\n{file_ctx}\n\n{input}"),
+                    (false, true)  => format!("{file_ctx}\n\n{input}"),
+                    (true,  false) => format!("{memory_ctx}\n\n{input}"),
+                    (true,  true)  => input.clone(),
+                }
             } else {
                 input.clone()
             };
@@ -69,29 +94,57 @@ pub fn run(files: &[String]) -> Result<()> {
                 format!("{mention_ctx}\n\n{base_ctx}")
             }
         };
+
+        let decision = slow.process_input(&input);
+        let call_content = if decision.prefix.is_empty() {
+            content.clone()
+        } else {
+            format!("[{}]\n\n{}", decision.prefix, &content)
+        };
+
+        // History stores the original; LLM call uses the prefixed version.
         history.push(Message::user(content));
+        let mut call_msgs = history[..history.len() - 1].to_vec();
+        call_msgs.push(Message::user(call_content));
 
         println!();
         print_assistant_label()?;
 
-        let mut line_start = true;
-        let response = client.stream(&history, |token| {
+        // Slow mode buffers the full response so the code gate can strip blocks
+        // before display. Quick mode (slow.enabled == false) streams live.
+        let response = if slow.enabled {
+            let raw = client.stream(&call_msgs, |_token| {})?;
+            let filtered = slow.filter_response(&raw);
             let mut out = io::stdout();
-            for ch in token.chars() {
-                if line_start {
-                    let _ = write!(out, " ");
-                    line_start = false;
-                }
-                let _ = write!(out, "{ch}");
+            let mut line_start = true;
+            for ch in filtered.display.chars() {
+                if line_start { write!(out, " ")?; line_start = false; }
+                write!(out, "{ch}")?;
                 if ch == '\n' { line_start = true; }
             }
-            let _ = out.flush();
-        })?;
+            out.flush()?;
+            raw
+        } else {
+            let mut line_start = true;
+            client.stream(&call_msgs, |token| {
+                let mut out = io::stdout();
+                for ch in token.chars() {
+                    if line_start {
+                        let _ = write!(out, " ");
+                        line_start = false;
+                    }
+                    let _ = write!(out, "{ch}");
+                    if ch == '\n' { line_start = true; }
+                }
+                let _ = out.flush();
+            })?
+        };
 
         println!("\n");
         history.push(Message::assistant(&response));
 
-        let blocks = parse_blocks(&response);
+        let display = memory.parse_memory_block(&response);
+        let blocks = parse_blocks(&display);
         for block in &blocks {
             // If the block has no detected filename but the user mentioned exactly
             // one file in their prompt, treat that file as the write target.
@@ -266,39 +319,31 @@ fn print_header(_files: &[String]) -> Result<()> {
     let mut out = io::stdout();
     println!();
 
-    out.queue(SetAttribute(Attribute::Bold))?;
-    writeln!(out, "devin")?;
-    out.queue(ResetColor)?;
-    println!();
-
-    out.queue(SetForegroundColor(BRAND))?;
-    write!(out, " ▝▜▄")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    write!(out, "   ▲")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
-    writeln!(out, "     Devin CLI v{}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out, "      Entic CLI v{}", env!("CARGO_PKG_VERSION"))?;
 
-    out.queue(SetForegroundColor(BRAND))?;
-    writeln!(out, "   ▝▜▄")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    writeln!(out, "  ▲▲▲")?;
 
-    write!(out, "  ▗▟▀")?;
+    out.queue(SetForegroundColor(SUCCESS))?;
+    write!(out, " ▲▲▲▲▲")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
-    write!(out, "    Signed in as ")?;
+    write!(out, "    Created by ")?;
     out.queue(SetAttribute(Attribute::Bold))?;
-    write!(out, "kination")?;
+    writeln!(out, "kination")?;
     out.queue(ResetColor)?;
-    writeln!(out, " /auth")?;
 
-    out.queue(SetForegroundColor(BRAND))?;
-    write!(out, " ▝▀")?;
+    out.queue(SetForegroundColor(MUTED))?;
+    write!(out, "   █")?;
     out.queue(ResetColor)?;
     out.queue(SetForegroundColor(Color::White))?;
     write!(out, "      Plan: ")?;
     out.queue(SetForegroundColor(MUTED))?;
-    write!(out, "{} ", model())?;
-    out.queue(ResetColor)?;
-    out.queue(SetForegroundColor(Color::White))?;
-    writeln!(out, "/upgrade")?;
+    writeln!(out, "{}", model())?;
     out.queue(ResetColor)?;
     println!();
 
@@ -310,7 +355,7 @@ fn print_header(_files: &[String]) -> Result<()> {
 
     write!(out, "│")?;
     out.queue(ResetColor)?;
-    write!(out, " Welcome to Devin CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
+    write!(out, " Welcome to Entic CLI. Inspired by 'claude code', 'gemini cli'. Powered by build-in MacOS LLM(wrapped by apfel), and other open models")?;
     write!(out, "{}", " ".repeat(width.saturating_sub(60)))?;
     out.queue(SetForegroundColor(BORDER))?;
     writeln!(out, "│")?;

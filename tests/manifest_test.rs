@@ -1,4 +1,4 @@
-use devin::manifest::Manifest;
+use entic::manifest::Manifest;
 use tempfile::tempdir;
 
 #[test]
