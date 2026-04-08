@@ -36,6 +36,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_context: bool,
 
+    /// Skip slow-develop mode for this session
+    #[arg(long)]
+    pub quick: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

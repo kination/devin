@@ -35,7 +35,17 @@ fn detect_model_from_server() -> Option<String> {
 const SYSTEM_PROMPT: &str = "\
 You are an AI assistant who knows code well. \
 You help with code analysis, bug fixes, refactoring, and explanations. \
-When suggesting code, always use markdown code blocks.";
+When suggesting code, always use markdown code blocks.\n\
+\n\
+If this conversation reveals a convention, gotcha, decision, or pattern worth \
+remembering for future sessions, append a MEMORY block at the very end of your response:\n\
+\n\
+<MEMORY>\n\
+{\"category\": \"gotchas\", \"content\": \"...\"}\n\
+</MEMORY>\n\
+\n\
+Only include MEMORY if genuinely useful. Omit it otherwise. \
+Categories: conventions | gotchas | decisions | patterns";
 
 pub enum BackendHandle {
     Managed(Child),  // apfel process started directly by devin

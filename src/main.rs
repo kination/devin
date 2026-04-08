@@ -8,6 +8,8 @@ mod indexer;
 mod manifest;
 mod parser;
 mod paths;
+mod memory;
+mod slow;
 mod tui;
 
 use std::path::PathBuf;
@@ -40,7 +42,7 @@ fn main() {
     let result = if let Some(query) = &args.query {
         ask::run(query, &files, args.print, args.diff)
     } else {
-        tui::run(&files)
+        tui::run(&files, args.quick)
     };
 
     if let Err(e) = result {
