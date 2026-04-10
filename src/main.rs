@@ -4,6 +4,7 @@ mod chat;
 mod cli;
 mod diff;
 mod error;
+mod fs_context;
 mod indexer;
 mod manifest;
 mod parser;
